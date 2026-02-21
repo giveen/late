@@ -1,0 +1,292 @@
+package tui
+
+import (
+	"encoding/json"
+	"fmt"
+	"late/internal/common"
+	"strings"
+
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// StreamMsg is the TUI-wrapper for session stream events
+type StreamMsg struct {
+	Result common.StreamResult
+	Err    error
+	Done   bool
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		tiCmd tea.Cmd
+		vpCmd tea.Cmd
+	)
+
+	// Global Key Handling (Ctrl+C)
+	if msg, ok := msg.(tea.KeyMsg); ok {
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+	}
+
+	// Window Sizing
+	if msg, ok := msg.(tea.WindowSizeMsg); ok {
+		m.Width = msg.Width
+		m.Height = msg.Height
+		for _, s := range m.AgentStates {
+			s.RenderedHistory = nil
+		}
+		m.updateLayout()
+	}
+
+	// Internal Messages
+	if msg, ok := msg.(SetMessengerMsg); ok {
+		m.Messenger = msg.Messenger
+		return m, nil
+	}
+
+	// Main Chat Update Logic
+	newM, cmd := m.updateChat(msg)
+	m = newM
+
+	// Update Sub-models
+	m.Input, tiCmd = m.Input.Update(msg)
+	var spCmd tea.Cmd
+	m.Spinner, spCmd = m.Spinner.Update(msg)
+
+	// Only forward key/mouse events to viewport when the user is NOT typing.
+	// The viewport has default keybindings (g, G, space, j, k, d, u, pgup, pgdn)
+	// that conflict with textarea input and cause chat messages to shift.
+	// Forward key events to viewport selectively to prevent conflict with typing
+	var forwardToViewport bool
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "up", "down", "pgup", "pgdown", "home", "end":
+			forwardToViewport = true
+		default:
+			// Only forward other keys if we are NOT typing (e.g. in a modal or viewing)
+			forwardToViewport = (m.GetAgentState(m.Focused.ID()).State != StateIdle)
+		}
+	case tea.MouseMsg:
+		forwardToViewport = true
+	case spinner.TickMsg:
+		// Always redraw on tick to animate tool calls/thinking
+		m.updateViewport()
+		forwardToViewport = false
+	default:
+		forwardToViewport = true
+	}
+
+	if forwardToViewport {
+		m.Viewport, vpCmd = m.Viewport.Update(msg)
+	}
+
+	return m, tea.Batch(cmd, tiCmd, vpCmd, spCmd)
+}
+
+func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		focusedState := m.GetAgentState(m.Focused.ID())
+		switch msg.String() {
+		case "esc":
+			if m.Mode != ViewChat {
+				m.Mode = ViewChat
+				focusedState.RenderedHistory = nil
+				m.updateViewport()
+				return m, nil
+			}
+			return m, tea.Quit
+
+		case "enter":
+			if focusedState.State == StateIdle {
+				input := strings.TrimPrefix(m.Input.Value(), "> ")
+				if strings.TrimSpace(input) == "" {
+					return m, nil
+				}
+
+				if err := m.Focused.Submit(input); err != nil {
+					m.Err = err
+					return m, nil
+				}
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				focusedState.State = StateThinking
+				m.updateViewport()
+				return m, nil
+			}
+
+			if focusedState.State == StateAsk && focusedState.PendingPrompt != nil {
+				// Check for numeric choice if options exist
+				var schema struct {
+					Enum []string `json:"enum"`
+				}
+				if err := json.Unmarshal(focusedState.PendingPrompt.Request.Schema, &schema); err == nil && len(schema.Enum) > 0 {
+					val := msg.String()
+					if len(val) == 1 && val[0] >= '1' && val[0] <= '9' {
+						idx := int(val[0] - '1')
+						if idx < len(schema.Enum) {
+							choice := schema.Enum[idx]
+							res, _ := json.Marshal(choice)
+							focusedState.PendingPrompt.ResultCh <- res
+							focusedState.PendingPrompt = nil
+							focusedState.State = StateThinking
+							m.Input.Reset()
+							m.Input.SetValue("> ")
+							m.updateViewport()
+							return m, nil
+						}
+					}
+				}
+
+				if msg.String() == "enter" {
+					input := strings.TrimPrefix(m.Input.Value(), "> ")
+					res, _ := json.Marshal(input)
+					focusedState.PendingPrompt.ResultCh <- res
+					focusedState.PendingPrompt = nil
+					focusedState.State = StateThinking
+					m.Input.Reset()
+					m.Input.SetValue("> ")
+					m.updateViewport()
+					return m, nil
+				}
+			}
+
+		case "tab":
+			// Allow focus switching regardless of agent state
+			all := []common.Orchestrator{m.Root}
+			for _, child := range m.Root.Children() {
+				if !m.GetAgentState(child.ID()).Closed {
+					all = append(all, child)
+				}
+			}
+
+			idx := -1
+			for i, a := range all {
+				if a.ID() == m.Focused.ID() {
+					idx = i
+					break
+				}
+			}
+
+			next := (idx + 1) % len(all)
+			m.Focused = all[next]
+			// Initialize state if missing
+			m.GetAgentState(m.Focused.ID())
+			m.updateViewport()
+			return m, nil
+
+		case "y", "Y":
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
+				focusedState.PendingConfirm.ResultCh <- true
+				focusedState.PendingConfirm = nil
+				focusedState.State = StateThinking
+				m.updateViewport()
+				return m, nil
+			}
+
+		case "n", "N":
+			if focusedState.State == StateConfirmTool && focusedState.PendingConfirm != nil {
+				focusedState.PendingConfirm.ResultCh <- false
+				focusedState.PendingConfirm = nil
+				focusedState.State = StateThinking
+				m.updateViewport()
+				return m, nil
+			}
+
+		case "ctrl+g":
+			if focusedState.State == StateThinking || focusedState.State == StateStreaming {
+				m.Focused.Cancel()
+				// State will be updated to 'idle' or 'error' automatically by the orchestrator event stream
+				return m, nil
+			}
+		}
+
+	case OrchestratorEventMsg:
+		s := m.GetAgentState(msg.Event.OrchestratorID())
+		switch event := msg.Event.(type) {
+		case common.ContentEvent:
+			s.StreamingState = event
+			// Protection: don't override interaction states
+			if s.State != StateAsk && s.State != StateConfirmTool {
+				s.State = StateStreaming
+			}
+			if event.ID == m.Focused.ID() {
+				m.updateViewport()
+			}
+		case common.StatusEvent:
+			switch event.Status {
+			case "thinking":
+				// Protection: don't override interaction states
+				if s.State != StateAsk && s.State != StateConfirmTool {
+					s.State = StateThinking
+				}
+				s.StatusText = "Working..."
+				s.StreamingState = common.ContentEvent{ID: event.ID}
+			case "closed":
+				s.State = StateIdle
+				s.StatusText = "Closed"
+				s.Closed = true
+				// If the focused agent closed, switch back to parent (if any) or root
+				if event.ID == m.Focused.ID() {
+					if m.Focused.Parent() != nil {
+						m.Focused = m.Focused.Parent()
+					} else {
+						m.Focused = m.Root
+					}
+					m.updateViewport()
+				}
+			case "error":
+				s.State = StateIdle
+				s.StatusText = fmt.Sprintf("Error: %v", event.Error)
+				// We don't clear rendered history so user can see what happened
+			default:
+				s.State = StateIdle
+				s.StatusText = "Ready"
+				s.RenderedHistory = nil
+			}
+			if event.ID == m.Focused.ID() {
+				m.updateViewport()
+			}
+		case common.ChildAddedEvent:
+			s.StatusText = fmt.Sprintf("Subagent '%s' Spawned (Tab to switch)", event.Child.ID())
+			m.updateViewport()
+		}
+
+	case PromptRequestMsg:
+		s := m.GetAgentState(msg.OrchestratorID)
+		s.State = StateAsk
+		s.PendingPrompt = &msg
+		m.updateViewport()
+		return m, nil
+
+	case ConfirmRequestMsg:
+		s := m.GetAgentState(msg.OrchestratorID)
+		s.State = StateConfirmTool
+		s.PendingConfirm = &msg
+		m.updateViewport()
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m *Model) updateLayout() {
+	if m.Width == 0 || m.Height == 0 {
+		return
+	}
+
+	availableWidth := m.Width
+	m.Input.SetWidth(availableWidth - 8)
+
+	m.Viewport.Width = availableWidth
+	m.Viewport.Height = m.Height - InputHeight - StatusBarHeight - AppPadding
+
+	if m.Viewport.Height < 1 {
+		m.Viewport.Height = 1
+	}
+
+	m.updateViewport()
+}

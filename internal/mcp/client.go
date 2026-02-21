@@ -1,0 +1,214 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"late/internal/tool"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// Client manages MCP connections and tools.
+type Client struct {
+	client   *mcp.Client
+	sessions map[string]*mcp.ClientSession
+	tools    map[string]*ToolAdapter
+}
+
+// NewClient creates a new MCP client.
+func NewClient() *Client {
+	return &Client{
+		sessions: make(map[string]*mcp.ClientSession),
+		tools:    make(map[string]*ToolAdapter),
+	}
+}
+
+// ToolAdapter adapts MCP tools to the Tool interface.
+type ToolAdapter struct {
+	mcpTool *mcp.Tool
+	session *mcp.ClientSession
+}
+
+// Name returns the tool name.
+func (t *ToolAdapter) Name() string {
+	return t.mcpTool.Name
+}
+
+// Description returns the tool description.
+func (t *ToolAdapter) Description() string {
+	return t.mcpTool.Description
+}
+
+// Parameters returns the tool parameters schema.
+func (t *ToolAdapter) Parameters() json.RawMessage {
+	paramsJSON, _ := json.Marshal(t.mcpTool.InputSchema)
+	return json.RawMessage(paramsJSON)
+}
+
+// Execute executes the MCP tool.
+func (t *ToolAdapter) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var params map[string]any
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", err
+	}
+
+	result, err := t.session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      t.mcpTool.Name,
+		Arguments: params,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	// Convert result to string
+	var sb strings.Builder
+	for _, content := range result.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			sb.WriteString(text.Text)
+		} else if image, ok := content.(*mcp.ImageContent); ok {
+			sb.WriteString(fmt.Sprintf("[Image: %s]", image.MIMEType))
+		}
+	}
+
+	output := sb.String()
+
+	// Truncate to ~1k tokens (~4000 chars)
+	const maxChars = 4000
+	if len(output) > maxChars {
+		output = output[:maxChars] + "\n\n[... truncated, output exceeded limit ...]"
+	}
+
+	return output, nil
+}
+
+// RequiresConfirmation returns false for MCP tools (they handle security themselves).
+func (t *ToolAdapter) RequiresConfirmation(args json.RawMessage) bool {
+	return true
+}
+
+// CallString returns a string representation for calling the tool.
+func (t *ToolAdapter) CallString(args json.RawMessage) string {
+	return fmt.Sprintf("Calling MCP tool '%s'...", t.mcpTool.Name)
+}
+
+// Connect establishes a connection to an MCP server.
+func (c *Client) Connect(ctx context.Context, transport mcp.Transport) error {
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:    "late",
+		Version: "1.0.0",
+	}, nil)
+
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return fmt.Errorf("failed to connect to MCP server: %w", err)
+	}
+
+	// Store session
+	c.sessions["default"] = session
+
+	// List and store tools using iterator
+	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
+		if tool != nil {
+			adapter := &ToolAdapter{
+				mcpTool: tool,
+				session: session,
+			}
+			c.tools[tool.Name] = adapter
+		}
+	}
+
+	return nil
+}
+
+// GetTools returns all MCP tools as Tool interface instances.
+func (c *Client) GetTools() []tool.Tool {
+	tools := make([]tool.Tool, 0, len(c.tools))
+	for _, t := range c.tools {
+		tools = append(tools, t)
+	}
+	return tools
+}
+
+// GetTool returns a specific MCP tool by name.
+func (c *Client) GetTool(name string) tool.Tool {
+	return c.tools[name]
+}
+
+// Close closes all MCP connections.
+func (c *Client) Close() error {
+	for name, session := range c.sessions {
+		if err := session.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error closing MCP session '%s': %v\n", name, err)
+		}
+	}
+	return nil
+}
+
+// NewStdioTransport creates a new transport that communicates with a subprocess.
+func NewStdioTransport(command string, args []string, env []string) (mcp.Transport, error) {
+	cmd := exec.Command(command, args...)
+	cmd.Env = append(os.Environ(), env...)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start command: %w", err)
+	}
+
+	// Discard stderr to prevent output from bleeding into TUI
+	go func() {
+		io.Copy(io.Discard, stderr)
+	}()
+
+	// Ensure process is killed when context is cancelled or transport closed?
+	// For now, relies on stdin closing to terminate the process.
+	// TODO: Handle process cleanup properly.
+
+	return &mcp.IOTransport{
+		Reader: stdout,
+		Writer: stdin,
+	}, nil
+}
+
+func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error {
+	for name, server := range config.McpServers {
+		if server.Disabled {
+			fmt.Printf("Skipping disabled MCP server: %s\n", name)
+			continue
+		}
+
+		// Expand environment variables in server configuration
+		ExpandServerEnvVars(&server)
+
+		// Create transport for this server
+		transport, err := NewStdioTransport(server.Command, server.Args, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create transport for server %s: %w", name, err)
+		}
+
+		// Connect to the server
+		if err := c.Connect(ctx, transport); err != nil {
+			return fmt.Errorf("failed to connect to server %s: %w", name, err)
+		}
+	}
+
+	return nil
+}

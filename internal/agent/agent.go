@@ -1,0 +1,119 @@
+package agent
+
+import (
+	"encoding/json"
+	"fmt"
+	"late/internal/assets"
+	"late/internal/client"
+	"late/internal/common"
+	"late/internal/executor"
+	"late/internal/orchestrator"
+	"late/internal/session"
+	"late/internal/tui"
+	"os"
+)
+
+// NewSubagentOrchestrator creates a new BaseOrchestrator for a subagent.
+func NewSubagentOrchestrator(
+	c *client.Client,
+	goal string,
+	ctxFiles []string,
+	agentType string,
+	enabledTools map[string]bool,
+	injectCWD bool,
+	parent common.Orchestrator,
+) (common.Orchestrator, error) {
+	// 1. Determine System Prompt
+	systemPrompt := ""
+	if agentType == "coder" {
+		content, err := assets.PromptsFS.ReadFile("prompts/instruction-coding.md")
+		if err != nil {
+			return nil, fmt.Errorf("failed to load embedded subagent prompt: %w", err)
+		}
+		systemPrompt = string(content)
+
+		if injectCWD {
+			cwd, err := os.Getwd()
+			if err == nil {
+				systemPrompt = common.ReplacePlaceholders(systemPrompt, map[string]string{
+					"${{CWD}}": cwd,
+				})
+			}
+		}
+	} else {
+		return nil, fmt.Errorf("unknown agent type: %s", agentType)
+	}
+
+	// 2. Create Session
+	historyFile, err := os.CreateTemp("", "late-subagent-*.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp history file: %w", err)
+	}
+	historyPath := historyFile.Name()
+	historyFile.Close()
+
+	sess := session.New(c, historyPath, []client.ChatMessage{}, systemPrompt, true)
+
+	// Inherit all tools from parent (including MCP tools)
+	if parent != nil && parent.Registry() != nil {
+		for _, t := range parent.Registry().All() {
+			// Skip spawn_subagent to prevent recursion
+			if t.Name() == "spawn_subagent" {
+				continue
+			}
+			sess.Registry.Register(t)
+		}
+	} else {
+		executor.RegisterStandardTools(sess.Registry, enabledTools)
+	}
+
+	// 3. Construct Initial Context
+	initialMsg := fmt.Sprintf("Goal: %s\n\n", goal)
+	if len(ctxFiles) > 0 {
+		initialMsg += "Context Files:\n"
+		for _, f := range ctxFiles {
+			content, err := os.ReadFile(f)
+			if err == nil {
+				initialMsg += fmt.Sprintf("- %s:\n```\n%s\n```\n", f, string(content))
+			}
+		}
+	}
+
+	if err := sess.AddUserMessage(initialMsg); err != nil {
+		return nil, fmt.Errorf("failed to add initial message: %w", err)
+	}
+
+	// 4. Create Orchestrator
+	id := fmt.Sprintf("subagent-%d", len(parent.Children()))
+	mws := parent.Middlewares()
+	// Replace the confirmation middleware with one that uses the subagent's registry
+	// This is a bit hacky but ensures the subagent's tools are checked correctly.
+	// We assume TUIConfirmMiddleware is the only one or we specifically replace it.
+	// For now, just create a new one.
+	if p, ok := parent.Context().Value(common.InputProviderKey).(tui.Messenger); ok {
+		mws = []common.ToolMiddleware{
+			tui.TUIConfirmMiddleware(p, sess.Registry),
+		}
+	}
+
+	child := orchestrator.NewBaseOrchestrator(id, sess, mws)
+	child.SetContext(parent.Context())
+
+	if p, ok := parent.(*orchestrator.BaseOrchestrator); ok {
+		p.AddChild(child)
+	}
+
+	return child, nil
+}
+
+// AskUser is used by tools that need to prompt the user for input.
+// It uses the delegate's Confirm method with a formatted prompt.
+func FormatToolConfirmPrompt(tc client.ToolCall) string {
+	var jsonObj map[string]interface{}
+	args := tc.Function.Arguments
+	if err := json.Unmarshal([]byte(args), &jsonObj); err == nil {
+		pretty, _ := json.MarshalIndent(jsonObj, "", "  ")
+		args = string(pretty)
+	}
+	return fmt.Sprintf("Execute **%s**:\n\n```json\n%s\n```", tc.Function.Name, args)
+}

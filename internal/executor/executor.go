@@ -1,0 +1,205 @@
+// Package executor provides shared logic for running LLM interaction loops.
+// It unifies the stream accumulation, tool execution, and tool registration
+// logic previously duplicated between internal/tui and internal/agent.
+package executor
+
+import (
+	"context"
+	"fmt"
+	"late/internal/client"
+	"late/internal/common"
+	"late/internal/session"
+	"late/internal/tool"
+)
+
+// --- Stream Accumulator ---
+
+// StreamAccumulator collects streaming deltas into coherent content.
+// This replaces the duplicated accumulation logic in tui/state.go (GenerationState.Append)
+// and agent/agent.go (manual accumulation loop).
+type StreamAccumulator struct {
+	Content   string
+	Reasoning string
+	ToolCalls []client.ToolCall
+}
+
+// Append merges a single streaming delta into the accumulated state.
+func (a *StreamAccumulator) Append(res common.StreamResult) {
+	a.Content += res.Content
+	a.Reasoning += res.ReasoningContent
+
+	for _, delta := range res.ToolCalls {
+		index := delta.Index
+		if index < len(a.ToolCalls) {
+			a.ToolCalls[index].Function.Arguments += delta.Function.Arguments
+			if delta.Function.Name != "" {
+				a.ToolCalls[index].Function.Name = delta.Function.Name
+			}
+			if delta.ID != "" {
+				a.ToolCalls[index].ID = delta.ID
+			}
+		} else {
+			a.ToolCalls = append(a.ToolCalls, delta)
+		}
+	}
+}
+
+// Reset clears all accumulated state.
+func (a *StreamAccumulator) Reset() {
+	a.Content = ""
+	a.Reasoning = ""
+	a.ToolCalls = nil
+}
+
+// --- Tool Execution ---
+
+// ExecuteToolCalls runs a slice of tool calls against the session.
+// It uses the provided middlewares to wrap the base tool execution.
+// Results are added to the session history.
+func ExecuteToolCalls(ctx context.Context, sess *session.Session, toolCalls []client.ToolCall, middlewares []common.ToolMiddleware) error {
+	// Base execution logic
+	baseRunner := func(ctx context.Context, tc client.ToolCall) (string, error) {
+		t := sess.Registry.Get(tc.Function.Name)
+		if t == nil {
+			return fmt.Sprintf("Error: tool '%s' not found", tc.Function.Name), nil
+		}
+		return sess.ExecuteTool(ctx, tc)
+	}
+
+	// Wrap with middlewares (in reverse order so first middleware is outermost)
+	runner := baseRunner
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		runner = middlewares[i](common.ToolRunner(runner))
+	}
+
+	for _, tc := range toolCalls {
+		result, err := runner(ctx, tc)
+		if err != nil {
+			result = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, err)
+		}
+		if err := sess.AddToolResultMessage(tc.ID, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- Tool Registration ---
+
+// RegisterStandardTools registers the common tool set on a session's registry.
+// This eliminates the duplicated registration in tui/model.go and agent/agent.go.
+// Disabled native tools from the config will be omitted.
+func RegisterStandardTools(reg *tool.Registry, enabledTools map[string]bool) {
+	if enabledTools == nil {
+		enabledTools = make(map[string]bool)
+	}
+
+	if enabledTools["read_file"] {
+		reg.Register(tool.NewReadFileTool())
+	}
+	if enabledTools["write_file"] {
+		reg.Register(tool.WriteFileTool{})
+	}
+	if enabledTools["list_dir"] {
+		reg.Register(tool.ListDirTool{})
+	}
+	if enabledTools["mkdir"] {
+		reg.Register(tool.MkdirTool{})
+	}
+	if enabledTools["grep_search"] {
+		reg.Register(tool.NewGrepTool())
+	}
+	if enabledTools["targetEdit"] || enabledTools["target_edit"] {
+		reg.Register(tool.NewTargetEditTool())
+	}
+	if enabledTools["ask"] {
+		reg.Register(tool.AskTool{})
+	}
+	if enabledTools["bash"] {
+		reg.Register(tool.BashTool{})
+	}
+}
+
+// --- Consume Stream ---
+
+// ConsumeStream drains a stream channel pair into a StreamAccumulator.
+// It calls onChunk (if non-nil) for each delta, enabling real-time UI updates.
+// Returns the final accumulated state or an error.
+func ConsumeStream(
+	ctx context.Context,
+	outCh <-chan common.StreamResult,
+	errCh <-chan error,
+	onChunk func(common.StreamResult),
+) (*StreamAccumulator, error) {
+	acc := &StreamAccumulator{}
+
+	for res := range outCh {
+		acc.Append(res)
+		if onChunk != nil {
+			onChunk(res)
+		}
+	}
+
+	// Check for stream error
+	select {
+	case err, ok := <-errCh:
+		if ok && err != nil {
+			return acc, fmt.Errorf("stream error: %w", err)
+		}
+	default:
+	}
+
+	return acc, nil
+}
+
+// --- Full Run Loop (Blocking) ---
+
+// RunLoop handles the core, blocking event loop for autonomous agents.
+// It forces the sequence: inference stream -> verifiable accumulation -> history commit -> safe tool execution.
+// If the deterministic tool extraction yields zero calls, the loop securely collapses and returns execution control.
+//
+
+func RunLoop(
+	ctx context.Context,
+	sess *session.Session,
+	maxTurns int,
+	extraBody map[string]any,
+	onStartTurn func(),
+	onEndTurn func(),
+	onStreamChunk func(common.StreamResult),
+	middlewares []common.ToolMiddleware,
+) (string, error) {
+	var lastContent string
+
+	for i := 0; i < maxTurns; i++ {
+		if onStartTurn != nil {
+			onStartTurn()
+		}
+
+		streamCh, errCh := sess.StartStream(ctx, extraBody)
+		acc, err := ConsumeStream(ctx, streamCh, errCh, onStreamChunk)
+		if err != nil {
+			return "", err
+		}
+
+		if err := sess.AddAssistantMessageWithTools(acc.Content, acc.Reasoning, acc.ToolCalls); err != nil {
+			return "", fmt.Errorf("failed to save history: %w", err)
+		}
+
+		if onEndTurn != nil {
+			onEndTurn()
+		}
+
+		if len(acc.ToolCalls) == 0 {
+			return acc.Content, nil
+		}
+
+		lastContent = acc.Content
+
+		if err := ExecuteToolCalls(ctx, sess, acc.ToolCalls, middlewares); err != nil {
+			return "", err
+		}
+	}
+
+	return lastContent + "\n\n(Terminated due to max turns limit)", nil
+}
