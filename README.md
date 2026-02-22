@@ -9,7 +9,10 @@
 
 ## Why Late?
 
-Most AI coding agents rely on "Context Stuffing"—throwing 10k+ tokens of instructions at a frontier model (Claude/GPT-5) and hoping it mimics a developer.
+Most AI coding agents rely on "Context Stuffing"—throwing 10k+ tokens of instructions at a frontier model (Claude/GPT-5) and hoping it mimics a developer. 
+
+**This actively degrades model reasoning.**
+The longer a session runs, the dumber the model gets. Models suffer a [39% performance drop](https://arxiv.org/abs/2512.13914) as context pollutes over multiple interactions, and [lose 60-80% of their effectiveness within just 2-3 attempts](https://arxiv.org/abs/2506.18403) at solving a problem.
 
 **Late takes a Systems Engineering approach.**
 Instead of asking the LLM to *be* a coder, Late uses the LLM strictly for **token generation** within a deterministic state machine written in Go.
@@ -17,7 +20,7 @@ Instead of asking the LLM to *be* a coder, Late uses the LLM strictly for **toke
 - **Efficiency**: The Core System Prompt is **<80 lines**.
 - **Deterministic Block-Matching:** Uses strict <<<< / ==== / >>>> diff syntax instead of relying on the LLM to hallucinate line numbers
 - **Native MCP**: Implements the [Model Context Protocol](https://github.com/modelcontextprotocol) directly, allowing it to use any standard MCP server.
-- **Subagent Loops**: Spawns isolated, task-specific subagents (Researcher/Coder) that run in their own ephemeral context loops.
+- **Subagent Loops**: Spawns isolated, task-specific subagents that run in their own ephemeral context loops.
 
 ## How It Works
 
