@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -88,9 +89,14 @@ func (t *TargetEditTool) RequiresConfirmation(args json.RawMessage) bool {
 }
 
 func (t *TargetEditTool) CallString(args json.RawMessage) string {
-	file := getToolParam(args, "file")
-	if file == "" {
-		return "Editing file"
+	var params struct {
+		File string `json:"file"`
 	}
-	return fmt.Sprintf("Editing file %s", truncate(file, 50))
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "Editing file (unknown file)"
+	}
+
+	// Use just the filename for display, with truncated path if needed
+	filename := filepath.Base(params.File)
+	return fmt.Sprintf("Editing file %s", truncate(filename, 50))
 }

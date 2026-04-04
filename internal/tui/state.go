@@ -40,13 +40,15 @@ const (
 
 // AppState tracks the interactive state of a single orchestrator.
 type AppState struct {
-	State           ValidationState
-	StreamingState  common.ContentEvent
-	PendingConfirm  *ConfirmRequestMsg
-	StatusText      string
-	RenderedHistory []string // Cache for rendered messages
-	Closed          bool     // Whether the agent has finished its task
-	PendingStop     bool     // Whether a stop has been requested
+	State                   ValidationState
+	StreamingState          common.ContentEvent
+	PendingConfirm          *ConfirmRequestMsg
+	StatusText              string
+	RenderedHistory         []string // Cache for rendered messages
+	Closed                  bool     // Whether the agent has finished its task
+	PendingStop             bool     // Whether a stop has been requested
+	TokenCount              int      // Estimated token count for current streaming content
+	CumulativeTokenCount    int      // Total tokens accumulated across entire session (all messages)
 }
 
 type Model struct {

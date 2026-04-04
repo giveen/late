@@ -48,8 +48,6 @@ export OPENAI_BASE_URL="http://localhost:8080"
 late
 ```
 
-*(Note for llama.cpp users: Upstream contains a bug causing crashes during context shifts with slots. You **MUST** use the build patched with [PR #18675](https://github.com/mlhher/llama.cpp) for stability).*
-
 ## Operational Notes
 
 Late is a raw, high-performance execution engine. It does not hold your hand.

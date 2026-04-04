@@ -108,7 +108,7 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 		if enabledTools["write_file"] {
 			reg.Register(tool.WriteFileTool{})
 		}
-		if enabledTools["targetEdit"] || enabledTools["target_edit"] {
+		if enabledTools["target_edit"] {
 			reg.Register(tool.NewTargetEditTool())
 		}
 	}

@@ -113,6 +113,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.Input.Reset()
 				m.Input.SetValue("> ")
 				focusedState.State = StateThinking
+				// Token count will be calculated in ContentEvent handler
 				m.updateViewport()
 				return m, nil
 			}
@@ -166,6 +167,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				focusedState.PendingStop = true
 				focusedState.State = StateStopping
 				focusedState.StatusText = "Stopping..."
+				focusedState.TokenCount = 0
 				m.Focused.Cancel()
 				m.updateViewport()
 				return m, nil
@@ -174,6 +176,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				focusedState.PendingStop = true
 				focusedState.State = StateStopping
 				focusedState.StatusText = "Stopping..."
+				focusedState.TokenCount = 0
 				m.Focused.Cancel()
 				m.updateViewport()
 				return m, nil
@@ -188,6 +191,26 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			if s.State != StateConfirmTool {
 				s.State = StateStreaming
 			}
+			// Calculate tokens from new content
+			newContentTokens := common.EstimateTokenCount(event.ReasoningContent + event.Content)
+
+			// Calculate tokens from history (user, assistant, tool messages)
+			historyTokens := 0
+			for _, msg := range m.Focused.History() {
+				if msg.Role == "user" {
+					historyTokens += common.EstimateTokenCount(msg.Content)
+				}
+				if msg.Role == "assistant" {
+					historyTokens += common.EstimateTokenCount(msg.ReasoningContent + msg.Content)
+				}
+				if msg.Role == "tool" {
+					historyTokens += common.EstimateTokenCount(msg.Content)
+				}
+			}
+
+			// Update cumulative count
+			s.CumulativeTokenCount = historyTokens + newContentTokens
+			s.TokenCount = newContentTokens // Keep current count for display purposes
 			if event.ID == m.Focused.ID() {
 				m.updateViewport()
 			}
@@ -243,6 +266,8 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		s.PendingConfirm = &msg
 		m.updateViewport()
 		return m, nil
+
+	
 	}
 
 	return m, nil

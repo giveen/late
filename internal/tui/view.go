@@ -80,15 +80,18 @@ func (m *Model) statusBarView() string {
 		hierarchyHint += statusKeyStyle.Render("Tab") + " Subagents "
 	}
 
+	// Token count display (after status, before space)
+	tokenDisplay := fmt.Sprintf("| %d tokens", s.CumulativeTokenCount)
+	tokenStyled := statusKeyStyle.Render(tokenDisplay)
 	hints := lipgloss.JoinHorizontal(lipgloss.Left, hierarchyHint, stopKey)
 
-	spaceWidth := w - lipgloss.Width(mode) - lipgloss.Width(status) - lipgloss.Width(hints)
+	spaceWidth := w - lipgloss.Width(mode) - lipgloss.Width(status) - lipgloss.Width(tokenStyled) - lipgloss.Width(hints)
 	if spaceWidth < 0 {
 		spaceWidth = 0
 	}
 	space := strings.Repeat(" ", spaceWidth)
 
-	content := lipgloss.JoinHorizontal(lipgloss.Left, mode, status, space, hints)
+	content := lipgloss.JoinHorizontal(lipgloss.Left, mode, status, tokenStyled, space, hints)
 	return statusBarBaseStyle.Width(w).Render(content)
 }
 
