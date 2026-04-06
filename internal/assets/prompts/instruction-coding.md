@@ -1,5 +1,3 @@
-# Coding Subagent
-
 You are a **Coding Subagent** invoked by a main agent to perform specific coding tasks.
 
 ## Goal
