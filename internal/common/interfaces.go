@@ -28,6 +28,9 @@ type Orchestrator interface {
 	// Hierarchy
 	Children() []Orchestrator
 	Parent() Orchestrator
+
+	// Configuration
+	SetMaxTurns(int)
 }
 
 // Event represents something that happened in the orchestrator.

@@ -22,6 +22,7 @@ func NewSubagentOrchestrator(
 	enabledTools map[string]bool,
 	injectCWD bool,
 	gemmaThinking bool,
+	maxTurns int,
 	parent common.Orchestrator,
 	messenger tui.Messenger,
 ) (common.Orchestrator, error) {
@@ -104,7 +105,7 @@ func NewSubagentOrchestrator(
 		}
 	}
 
-	child := orchestrator.NewBaseOrchestrator(id, sess, mws)
+	child := orchestrator.NewBaseOrchestrator(id, sess, mws, maxTurns)
 	child.SetContext(parent.Context())
 
 	if p, ok := parent.(*orchestrator.BaseOrchestrator); ok {

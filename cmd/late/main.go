@@ -33,7 +33,8 @@ func main() {
 	enableBashReq := flag.Bool("enable-bash", true, "Enable bash tool execution")
 	injectCWDReq := flag.Bool("inject-cwd", true, "Replace ${{CWD}} in system prompt with current working directory")
 	enableSubagentsReq := flag.Bool("enable-subagents", true, "Enable subagent usage")
-	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token to system prompt for Gemma models")
+	gemmaThinkingReq := flag.Bool("gemma-thinking", false, "Prepend <|think|> token to system prompt for Gemma 4 models")
+	subagentMaxTurns := flag.Int("subagent-max-turns", 500, "Maximum number of turns for subagents (default: 500)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of late:\n")
@@ -186,7 +187,7 @@ func main() {
 
 	// Create root orchestrator
 	// We'll add middlewares later once the program is started
-	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil)
+	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
 
 	model := tui.NewModel(rootAgent, renderer)
 	p := tea.NewProgram(model, tea.WithAltScreen())
@@ -211,7 +212,7 @@ func main() {
 
 	if *enableSubagentsReq {
 		runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-			child, err := agent.NewSubagentOrchestrator(c, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, rootAgent, p)
+			child, err := agent.NewSubagentOrchestrator(c, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
 			if err != nil {
 				return "", err
 			}

@@ -27,9 +27,12 @@ type BaseOrchestrator struct {
 
 	// Stop mechanism
 	stopCh chan struct{}
+
+	// Max turns configuration
+	maxTurns int
 }
 
-func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware) *BaseOrchestrator {
+func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.ToolMiddleware, maxTurns int) *BaseOrchestrator {
 	return &BaseOrchestrator{
 		id:          id,
 		sess:        sess,
@@ -37,6 +40,7 @@ func NewBaseOrchestrator(id string, sess *session.Session, middlewares []common.
 		eventCh:     make(chan common.Event, 100),
 		ctx:         context.Background(),
 		stopCh:      make(chan struct{}),
+		maxTurns:    maxTurns,
 	}
 }
 
@@ -50,6 +54,12 @@ func (o *BaseOrchestrator) SetContext(ctx context.Context) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.ctx = ctx
+}
+
+func (o *BaseOrchestrator) SetMaxTurns(maxTurns int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.maxTurns = maxTurns
 }
 
 func (o *BaseOrchestrator) ID() string { return o.id }
@@ -121,7 +131,7 @@ func (o *BaseOrchestrator) Execute(text string) (string, error) {
 	res, err := executor.RunLoop(
 		ctx,
 		o.sess,
-		20, // maxTurns
+		o.maxTurns,
 		extraBody,
 		onStartTurn,
 		onEndTurn,
@@ -187,7 +197,7 @@ func (o *BaseOrchestrator) run() {
 	_, err := executor.RunLoop(
 		ctx,
 		o.sess,
-		2000, // maxTurns
+		o.maxTurns,
 		extraBody,
 		onStartTurn,
 		onEndTurn,

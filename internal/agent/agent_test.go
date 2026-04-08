@@ -21,7 +21,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 	mockHistoryPath := "/tmp/mock-session.json"
 	mockHistory := []client.ChatMessage{}
 	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true)
-	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil)
+	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
 
 	// Test with gemmaThinking = true
 	enabledTools := map[string]bool{"bash": true}
@@ -33,6 +33,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		enabledTools,
 		false, // injectCWD
 		true,  // gemmaThinking
+		100,   // maxTurns
 		parent,
 		nil,   // messenger
 	)
@@ -42,12 +43,12 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 	}
 
 	// Get the session from the child orchestrator
-	childBose, ok := child.(*orchestrator.BaseOrchestrator)
+	childBase, ok := child.(*orchestrator.BaseOrchestrator)
 	if !ok {
 		t.Fatalf("Expected BaseOrchestrator, got %T", child)
 	}
 
-	sess := childBose.Session()
+	sess := childBase.Session()
 
 	// Check that the system prompt has the <|think|> prefix
 	systemPrompt := sess.SystemPrompt()
@@ -64,6 +65,7 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		enabledTools,
 		false, // injectCWD
 		false, // gemmaThinking
+		100,   // maxTurns
 		parent,
 		nil,   // messenger
 	)
@@ -72,12 +74,12 @@ func TestNewSubagentOrchestratorWithGemmaThinking(t *testing.T) {
 		t.Fatalf("Failed to create subagent orchestrator: %v", err)
 	}
 
-	childBose2, ok := child2.(*orchestrator.BaseOrchestrator)
+	childBase2, ok := child2.(*orchestrator.BaseOrchestrator)
 	if !ok {
 		t.Fatalf("Expected BaseOrchestrator, got %T", child2)
 	}
 
-	sess2 := childBose2.Session()
+	sess2 := childBase2.Session()
 
 	// Check that the system prompt does NOT have the <|think|> prefix
 	systemPrompt2 := sess2.SystemPrompt()
@@ -96,7 +98,7 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 	mockHistoryPath := "/tmp/mock-session.json"
 	mockHistory := []client.ChatMessage{}
 	mockSession := session.New(c, mockHistoryPath, mockHistory, "mock system prompt", true)
-	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil)
+	parent := orchestrator.NewBaseOrchestrator("parent", mockSession, nil, 100)
 
 	enabledTools := map[string]bool{"bash": true}
 	child, err := NewSubagentOrchestrator(
@@ -107,6 +109,7 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 		enabledTools,
 		true,  // injectCWD
 		true,  // gemmaThinking
+		100,   // maxTurns
 		parent,
 		nil,   // messenger
 	)
@@ -115,12 +118,12 @@ func TestNewSubagentOrchestratorGemmaThinkingWithCWD(t *testing.T) {
 		t.Fatalf("Failed to create subagent orchestrator: %v", err)
 	}
 
-	childBose, ok := child.(*orchestrator.BaseOrchestrator)
+	childBase, ok := child.(*orchestrator.BaseOrchestrator)
 	if !ok {
 		t.Fatalf("Expected BaseOrchestrator, got %T", child)
 	}
 
-	sess := childBose.Session()
+	sess := childBase.Session()
 	systemPrompt := sess.SystemPrompt()
 
 	// Verify <|think|> is at the very beginning

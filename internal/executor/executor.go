@@ -173,7 +173,7 @@ func RunLoop(
 ) (string, error) {
 	var lastContent string
 
-	for i := 0; i < maxTurns; i++ {
+	for i := 0; maxTurns <= 0 || i < maxTurns; i++ {
 		if onStartTurn != nil {
 			onStartTurn()
 		}
