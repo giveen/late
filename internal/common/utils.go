@@ -40,3 +40,13 @@ func EstimateEventTokens(event ContentEvent) int {
 	}
 	return tokens
 }
+
+// CalculateHistoryTokens calculates the total token count from a slice of chat messages.
+// It iterates through all messages and sums up their individual token estimates.
+func CalculateHistoryTokens(history []client.ChatMessage) int {
+	total := 0
+	for _, msg := range history {
+		total += EstimateMessageTokens(msg)
+	}
+	return total
+}

@@ -109,3 +109,116 @@ func TestEstimateEventTokens(t *testing.T) {
 		t.Errorf("EstimateEventTokens() = %d; want %d", result, expected)
 	}
 }
+
+func TestCalculateHistoryTokens(t *testing.T) {
+	tests := []struct {
+		name     string
+		history  []client.ChatMessage
+		expected int
+	}{
+		{
+			name:     "empty history returns 0",
+			history:  []client.ChatMessage{},
+			expected: 0,
+		},
+		{
+			name:     "nil history returns 0",
+			history:  nil,
+			expected: 0,
+		},
+		{
+			name: "single message with content",
+			history: []client.ChatMessage{
+				{
+					Role:    "user",
+					Content: "Hello",
+				},
+			},
+			expected: 2, // "Hello" = 5 chars -> 2 tokens
+		},
+		{
+			name: "single message with reasoning content",
+			history: []client.ChatMessage{
+				{
+					Role:             "assistant",
+					Content:          "Here's the answer",
+					ReasoningContent: "Let me think about this...",
+				},
+			},
+			expected: 12, // "Here's the answer" = 17 chars -> 5 tokens, "Let me think about this..." = 26 chars -> 7 tokens, total = 12 tokens
+		},
+		{
+			name: "multiple messages sum correctly",
+			history: []client.ChatMessage{
+				{
+					Role:    "user",
+					Content: "What is 2+2?",
+				},
+				{
+					Role:             "assistant",
+					Content:          "2+2 equals 4",
+					ReasoningContent: "Simple math",
+				},
+			},
+			expected: 9, // "What is 2+2?" = 12 chars -> 3 tokens, "2+2 equals 4" = 12 chars -> 3 tokens, "Simple math" = 11 chars -> 3 tokens, total = 9 tokens
+		},
+		{
+			name: "message with tool calls included",
+			history: []client.ChatMessage{
+				{
+					Role:    "user",
+					Content: "Call the tool",
+				},
+				{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []client.ToolCall{
+						{
+							Function: client.FunctionCall{
+								Name:      "calculate",
+								Arguments: `{"a": 5, "b": 3}`,
+							},
+						},
+					},
+				},
+			},
+			expected: 11, // "Call the tool" = 13 chars -> 4 tokens, "calculate" = 9 chars -> 3 tokens, `{"a": 5, "b": 3}` = 15 chars -> 4 tokens, total = 11 tokens
+		},
+		{
+			name: "mixed messages with all content types",
+			history: []client.ChatMessage{
+				{
+					Role:    "user",
+					Content: "Hello",
+				},
+				{
+					Role:             "assistant",
+					Content:          "Hi there",
+					ReasoningContent: "Thinking...",
+					ToolCalls: []client.ToolCall{
+						{
+							Function: client.FunctionCall{
+								Name:      "greet",
+								Arguments: `{"name": "user"}`,
+							},
+						},
+					},
+				},
+				{
+					Role:    "user",
+					Content: "How are you?",
+				},
+			},
+			expected: 16, // "Hello" = 5 chars -> 2 tokens, "Hi there" = 8 chars -> 2 tokens, "Thinking..." = 11 chars -> 3 tokens, "greet" = 5 chars -> 2 tokens, `{"name": "user"}` = 16 chars -> 4 tokens, "How are you?" = 12 chars -> 3 tokens, total = 16 tokens
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CalculateHistoryTokens(tt.history)
+			if result != tt.expected {
+				t.Errorf("CalculateHistoryTokens() = %d; want %d", result, tt.expected)
+			}
+		})
+	}
+}

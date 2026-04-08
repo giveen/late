@@ -66,9 +66,15 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 		Spinner:        spinner.New(spinner.WithSpinner(spinner.Dot)),
 	}
 	// Initialize root state
+	history := root.History()
+	cumulativeTokens := 0
+	if history != nil && len(history) > 0 {
+		cumulativeTokens = common.CalculateHistoryTokens(history)
+	}
 	m.AgentStates[root.ID()] = &AppState{
-		State:      initialState,
-		StatusText: "Ready",
+		State:                  initialState,
+		StatusText:             "Ready",
+		CumulativeTokenCount:   cumulativeTokens,
 	}
 
 	return m
