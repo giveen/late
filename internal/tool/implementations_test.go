@@ -105,7 +105,7 @@ func TestBashTool_Execute(t *testing.T) {
 		{
 			name:    "non-whitelisted command rm",
 			params:  json.RawMessage(`{"command": "rm -rf /"}`),
-			wantErr: false, // Execute itself doesn't check whitelist anymore, RequiresConfirmation does
+			wantErr: false,            // Execute itself doesn't check whitelist anymore, RequiresConfirmation does
 			wantOut: "Command failed", // it will fail because we are not root or / is protected
 		},
 		{
@@ -131,12 +131,6 @@ func TestBashTool_Execute(t *testing.T) {
 			params:  json.RawMessage(`{"command": "echo hello world"}`),
 			wantErr: false,
 			wantOut: "hello world",
-		},
-		{
-			name:    "full command string with non-whitelisted base command",
-			params:  json.RawMessage(`{"command": "rm -rf /"}`),
-			wantErr: false,
-			wantOut: "Command failed",
 		},
 	}
 
@@ -405,7 +399,7 @@ func TestBashTool_MaliciousCatCommands(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tool := BashTool{}
 			err := tool.ValidateBashCommand(tt.command)
-			
+
 			if tt.shouldBlock {
 				if err == nil {
 					t.Errorf("Expected error for command %q, got nil", tt.command)
@@ -424,20 +418,20 @@ func TestBashTool_MaliciousCatCommands(t *testing.T) {
 func TestBashTool_ValidationMessages(t *testing.T) {
 	// Test that error messages are helpful and guide agents
 	tool := BashTool{}
-	
+
 	// Test blocked command
 	err := tool.ValidateBashCommand("cat > test.txt")
 	if err == nil {
 		t.Fatal("Expected error for cat > test.txt, got nil")
 	}
-	
+
 	errorMsg := err.Error()
-	
+
 	// Check that error message contains helpful guidance
 	if !strings.Contains(errorMsg, "cat cannot be used with output redirection") {
 		t.Errorf("Error message should contain 'cat cannot be used with output redirection', got: %q", errorMsg)
 	}
-	
+
 	// Test that safe commands don't produce errors
 	safeCommands := []string{
 		"cat test.txt",
@@ -447,7 +441,7 @@ func TestBashTool_ValidationMessages(t *testing.T) {
 		"echo hello",
 		"grep pattern file.txt",
 	}
-	
+
 	for _, cmd := range safeCommands {
 		err := tool.ValidateBashCommand(cmd)
 		if err != nil {
@@ -500,6 +494,36 @@ func TestBashTool_RequiresConfirmation(t *testing.T) {
 		{
 			name:     "invalid JSON",
 			params:   json.RawMessage(`{invalid}`),
+			expected: true,
+		},
+		{
+			name:     "semicolon compound with unsafe command",
+			params:   json.RawMessage(`{"command": "echo foo; wget url"}`),
+			expected: true, // MUST require confirmation because wget is not whitelisted
+		},
+		{
+			name:     "double ampersand compound with unsafe command",
+			params:   json.RawMessage(`{"command": "echo foo && wget url"}`),
+			expected: true,
+		},
+		{
+			name:     "pipe with unsafe command",
+			params:   json.RawMessage(`{"command": "echo foo | wget url"}`),
+			expected: true,
+		},
+		{
+			name:     "semicolon compound all safe",
+			params:   json.RawMessage(`{"command": "echo foo; ls -la"}`),
+			expected: false, // Both echo and ls are whitelisted
+		},
+		{
+			name:     "pipe all safe",
+			params:   json.RawMessage(`{"command": "cat file.txt | grep pattern"}`),
+			expected: false, // Both cat and grep are whitelisted
+		},
+		{
+			name:     "double pipe with unsafe",
+			params:   json.RawMessage(`{"command": "echo foo || wget url"}`),
 			expected: true,
 		},
 	}

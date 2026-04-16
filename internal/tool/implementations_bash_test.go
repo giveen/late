@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -530,4 +531,37 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestGetAllBaseCommands tests the getAllBaseCommands helper function
+func TestGetAllBaseCommands(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   []string
+	}{
+		{"simple command", "wget url", []string{"wget"}},
+		{"semicolon compound", "echo foo; wget url", []string{"echo", "wget"}},
+		{"double ampersand", "echo foo && wget url", []string{"echo", "wget"}},
+		{"double pipe", "echo foo || wget url", []string{"echo", "wget"}},
+		{"pipe", "echo foo | grep bar", []string{"echo", "grep"}},
+		{"mixed operators", "echo foo; wget url && ls", []string{"echo", "wget", "ls"}},
+		{"all safe", "echo foo; ls -la", []string{"echo", "ls"}},
+		{"all safe pipe", "cat file | grep pattern", []string{"cat", "grep"}},
+		{"multiple semicolons", "echo a; echo b; echo c", []string{"echo", "echo", "echo"}},
+		{"background process", "echo foo & wget bar", []string{"echo", "wget"}},
+		{"empty", "", []string{}},
+		{"only whitespace", "   ", []string{}},
+		{"trailing semicolon", "echo foo;", []string{"echo"}},
+		{"leading semicolon", ";echo foo", []string{"echo"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getAllBaseCommands(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("getAllBaseCommands(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
 }

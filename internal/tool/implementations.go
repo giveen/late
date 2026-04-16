@@ -291,6 +291,47 @@ func (t *BashTool) IsCommandBlocked(command string) (bool, error) {
 	return false, nil
 }
 
+// getAllBaseCommands splits a compound bash command into individual segments
+// and extracts the base command (first word) from each segment.
+// For example: "echo foo; wget url | cat" returns ["echo", "wget", "cat"]
+//
+// Note: This function does NOT handle quoted strings or subshells.
+// For example: echo 'hello && goodbye' ; ls  → ["echo", "goodbye'", "ls"]
+//              echo foo; (cd /tmp && ls)      → ["echo", "(cd", "ls"]
+// These edge cases currently cause over-confirmation (safer than under-confirmation).
+func getAllBaseCommands(command string) []string {
+	var commands = []string{}
+
+	// Replace && and || with ; first, then split by ; and |
+	normalized := command
+	normalized = strings.ReplaceAll(normalized, "&&", ";")
+	normalized = strings.ReplaceAll(normalized, "||", ";")
+	normalized = strings.ReplaceAll(normalized, "&", ";")
+
+	parts := strings.Split(normalized, ";")
+	for _, part := range parts {
+		// Trim whitespace
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		// Split by | to handle pipes
+		pipeParts := strings.Split(trimmed, "|")
+		for _, pipePart := range pipeParts {
+			pipeTrimmed := strings.TrimSpace(pipePart)
+			if pipeTrimmed == "" {
+				continue
+			}
+			// Extract first word (base command)
+			words := strings.Fields(pipeTrimmed)
+			if len(words) > 0 {
+				commands = append(commands, words[0])
+			}
+		}
+	}
+	return commands
+}
+
 // BashTool executes a bash command with security restrictions.
 type BashTool struct{}
 
@@ -374,12 +415,15 @@ func (t BashTool) RequiresConfirmation(args json.RawMessage) bool {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return true // Default to requiring confirmation if we can't parse
 	}
-	// If agent put full command string, extract base command
-	cmd := params.Command
-	if i := strings.IndexByte(cmd, ' '); i >= 0 {
-		cmd = cmd[:i]
+	// Get all base commands from potentially compound commands
+	baseCommands := getAllBaseCommands(params.Command)
+	// Require confirmation if ANY command is not whitelisted
+	for _, cmd := range baseCommands {
+		if !whitelistedCommands[cmd] {
+			return true
+		}
 	}
-	return !whitelistedCommands[cmd]
+	return false
 }
 
 func (t BashTool) CallString(args json.RawMessage) string {
