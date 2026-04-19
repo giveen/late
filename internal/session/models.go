@@ -36,7 +36,7 @@ func SaveSessionMeta(meta SessionMeta) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+	if err := os.MkdirAll(sessionsDir, 0700); err != nil {
 		return fmt.Errorf("failed to create sessions directory: %w", err)
 	}
 

@@ -43,9 +43,9 @@ func LoadMCPConfig() (*MCPConfig, error) {
 		emptyConfig := MCPConfig{McpServers: make(map[string]MCPServer)}
 		defaultData, _ := json.MarshalIndent(emptyConfig, "", "  ")
 
-		if err := os.MkdirAll(lateConfigDir, 0755); err == nil {
+		if err := os.MkdirAll(lateConfigDir, 0700); err == nil {
 			// Ignore write error, just fallback to empty config
-			_ = os.WriteFile(defaultUserPath, defaultData, 0644)
+			_ = os.WriteFile(defaultUserPath, defaultData, 0600)
 		}
 
 		return &emptyConfig, nil
