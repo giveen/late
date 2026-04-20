@@ -17,6 +17,10 @@ var (
 	aiMsgBg        = lipgloss.Color("#191919") // Almost black, slightly lighter than terminal
 	thoughtBgColor = lipgloss.Color("#101010") // Near black
 
+	// Layout Constants
+	UserMsgOverhead = 7 // Margin(1)*2 + Border(1) + Padding(2)*2 = 7
+	AIMsgOverhead   = 9 // Margin(1)*2 + Border(1) + PaddingL(4) + PaddingR(2) = 9
+
 	// Styles
 	appStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("#191919")).
@@ -31,7 +35,6 @@ var (
 
 	// User Bubble
 	userMsgStyle = lipgloss.NewStyle().
-			Foreground(textColor).
 			Background(userMsgBg).
 			Padding(0, 2).
 			Margin(0, 1).
@@ -43,7 +46,6 @@ var (
 
 	// AI Bubble
 	aiMsgStyle = lipgloss.NewStyle().
-			Foreground(textColor).
 			Background(aiMsgBg).
 			Padding(0, 2).
 			Margin(0, 1).

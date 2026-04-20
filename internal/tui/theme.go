@@ -99,7 +99,7 @@ var LateTheme = []byte(`
     "background_color": "#191919"
   },
   "table": {
-    "center": true,
+    "center": false,
     "margin": 0,
     "color": "#ECF0F1",
     "background_color": "#191919"

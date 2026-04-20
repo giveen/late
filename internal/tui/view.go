@@ -145,32 +145,34 @@ func (m *Model) updateViewport() {
 				assistantParts = append(assistantParts, thinkingStyle.Width(msgWidth-2).Render(msg.ReasoningContent))
 			}
 			if msg.Content != "" {
-				md, _ := m.Renderer.Render(msg.Content)
-
-				// Brute-force fix for transparency: replace ANSI reset (\x1b[0m) with 
-				// a reset that sets our background color (\x1b[0;48;2;25;25;25m).
-				// We also replace the default foreground to match.
-				bgReset := "\x1b[0;38;2;236;240;241;48;2;25;25;25m"
-				md = strings.ReplaceAll(md, "\x1b[0m", bgReset)
-
-				lines := strings.Split(md, "\n")
-				// Style for the inner content (background only, no borders)
-				lineStyle := lipgloss.NewStyle().
-					Background(aiMsgBg).
-					Foreground(textColor)
-
-				// Calculate inner width for padding: Border(1) + PaddingLeft(4) + PaddingRight(2) = 7
-				innerWidth := msgWidth - 7
+				// Calculate inner width based on message style overhead
+				// Subtract a small buffer to prevent Glamour table borders from being truncated by Lipgloss
+				innerWidth := m.Viewport.Width - AIMsgOverhead - 2
 				if innerWidth < 1 {
 					innerWidth = 1
 				}
+
+				md, _ := m.GetRenderer(innerWidth).Render(msg.Content)
+
+				resetInjection := "\x1b[38;2;85;85;85;48;2;25;25;25m"
+				md = strings.ReplaceAll(md, "\x1b[0m", "\x1b[0m"+resetInjection)
+				md = strings.ReplaceAll(md, "\x1b[m", "\x1b[m"+resetInjection)
+
+				lines := strings.Split(md, "\n")
+				// Style for the inner content (background and a default grey for structural elements like borders)
+				lineStyle := lipgloss.NewStyle().
+					Background(aiMsgBg).
+					Foreground(lipgloss.Color("#555555"))
+
+				// Final width for padding back to the full bubble width
+				fullWidth := m.Viewport.Width - AIMsgOverhead
 
 				for i, line := range lines {
 					if strings.TrimSpace(line) == "" && i == len(lines)-1 {
 						continue
 					}
-					// Ensure the background is applied to the full width
-					lines[i] = lineStyle.Width(innerWidth).Render(line)
+					// Ensure the background is applied to the full width without truncating
+					lines[i] = lineStyle.Width(fullWidth).Render(line)
 				}
 				fullMD := lipgloss.JoinVertical(lipgloss.Left, lines...)
 				assistantParts = append(assistantParts, aiMsgStyle.Render(fullMD))
@@ -210,29 +212,31 @@ func (m *Model) updateViewport() {
 			activeParts = append(activeParts, thinkingStyle.Width(msgWidth-2).Render(s.StreamingState.ReasoningContent))
 		}
 		if s.StreamingState.Content != "" {
-			md, _ := m.Renderer.Render(s.StreamingState.Content)
+			innerWidth := m.Viewport.Width - AIMsgOverhead - 2
+			if innerWidth < 1 {
+				innerWidth = 1
+			}
 
-			// Brute-force fix for transparency: replace ANSI reset (\x1b[0m) with 
-			// a reset that sets our background color.
-			bgReset := "\x1b[0;38;2;236;240;241;48;2;25;25;25m"
-			md = strings.ReplaceAll(md, "\x1b[0m", bgReset)
+			md, _ := m.GetRenderer(innerWidth).Render(s.StreamingState.Content)
+
+			// Robust fix for transparency and structural color
+			resetInjection := "\x1b[38;2;85;85;85;48;2;25;25;25m"
+			md = strings.ReplaceAll(md, "\x1b[0m", "\x1b[0m"+resetInjection)
+			md = strings.ReplaceAll(md, "\x1b[m", "\x1b[m"+resetInjection)
 
 			lines := strings.Split(md, "\n")
 			lineStyle := lipgloss.NewStyle().
 				Background(aiMsgBg).
-				Foreground(textColor)
+				Foreground(lipgloss.Color("#555555"))
 
-			innerWidth := msgWidth - 7
-			if innerWidth < 1 {
-				innerWidth = 1
-			}
+			fullWidth := m.Viewport.Width - AIMsgOverhead
 
 			for i, line := range lines {
 				if strings.TrimSpace(line) == "" && i == len(lines)-1 {
 					continue
 				}
 				// Ensure the background is applied to the full width
-				lines[i] = lineStyle.Width(innerWidth).Render(line)
+				lines[i] = lineStyle.Width(fullWidth).Render(line)
 			}
 			fullMD := lipgloss.JoinVertical(lipgloss.Left, lines...)
 			activeParts = append(activeParts, aiMsgStyle.Render(fullMD))
