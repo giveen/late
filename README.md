@@ -12,9 +12,13 @@ Standard AI coding assistants dump massive contexts into a single window, leadin
 ## 🔥 Why Late?
 
 ### 1. The Industry Standard is Broken (And How Late is Different)
-Tools like Claude Code, OpenCode, OpenClaw and virtually all other harnesses right now are naive, brute-force wrappers. They expect you to throw a big beefy cloud model at them. If your problem cannot be solved with your current setup, they just expect you to put in more money and use a smarter model. These tools feed your entire session into a single, growing context window.
+Tools like Claude Code, OpenClaw, OpenCode and virtually every other harness right now are naive, brute-force wrappers. They feed your entire session into a single, ever-growing context window. If the agent gets confused, their only solution is to expect you to throw a bigger model at it, either buying a new GPU or paying more for API calls.
 
-Late takes the opposite approach: a lean orchestrator delegates to ephemeral subagents with fresh, minimal context. Subagent history is destroyed on completion and never pollutes the planner's context. By maintaining a consistent KV cache, Late guarantees blazing-fast processing speeds. It refuses to inject unnecessary context that only serves to confuse the model, slow down your workflow, and burn through your API budget. This mirrors how real engineering teams operate. And it runs on 5GB VRAM with local models or any cloud endpoint.
+Late takes the opposite approach. A lean orchestrator delegates to ephemeral sub-agents, each spawned with a fresh, strictly scoped context. When a sub-agent finishes its task, its history is destroyed. It never pollutes the planner's context. This mirrors how real engineering teams operate: isolated tasks, no noise.
+
+By ruthlessly managing the KV cache, Late guarantees blazing-fast processing speeds and zero context degradation. It refuses to inject unnecessary history that only serves to confuse the model and burn your API budget. 
+
+It runs autonomously on just 5GB VRAM with local models, or drop in any OpenAI-compatible cloud endpoint.
 
 ### 2. Delegation Over Context Bloat
 **Zero Prompt Bloat:** Standard terminal agents eat 10,000+ tokens just for their system prompt, exhausting your VRAM or burning your money through API usage before you even start working. Late's core system prompt is ruthlessly optimized to ~1,000 tokens, leaving your context window open for what actually matters: your code. Throwing larger models at a problem doesn't solve context degradation. As context pollutes, models suffer massive performance drops.
