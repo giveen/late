@@ -65,6 +65,23 @@ func (m *Model) statusBarView() string {
 		statusText = "Authorize Tool Execution (y/n)"
 	}
 
+	// Check if any other agent is waiting for confirmation
+	otherWaiting := false
+	for id, state := range m.AgentStates {
+		if id != m.Focused.ID() && state.State == StateConfirmTool {
+			otherWaiting = true
+			break
+		}
+	}
+
+	var warning string
+	if otherWaiting {
+		warning = statusWarningStyle.Render(" SUBAGENT CONFIRMATION REQUIRED ")
+		if strings.Contains(statusText, "Spawned") {
+			statusText = ""
+		}
+	}
+
 	mode := statusModeStyle.Render(modeStr)
 	status := statusTextStyle.Render(statusText)
 
@@ -85,13 +102,13 @@ func (m *Model) statusBarView() string {
 	tokenStyled := statusKeyStyle.Render(tokenDisplay)
 	hints := lipgloss.JoinHorizontal(lipgloss.Left, hierarchyHint, stopKey)
 
-	spaceWidth := w - lipgloss.Width(mode) - lipgloss.Width(status) - lipgloss.Width(tokenStyled) - lipgloss.Width(hints)
+	spaceWidth := w - lipgloss.Width(mode) - lipgloss.Width(status) - lipgloss.Width(warning) - lipgloss.Width(tokenStyled) - lipgloss.Width(hints)
 	if spaceWidth < 0 {
 		spaceWidth = 0
 	}
 	space := strings.Repeat(" ", spaceWidth)
 
-	content := lipgloss.JoinHorizontal(lipgloss.Left, mode, status, tokenStyled, space, hints)
+	content := lipgloss.JoinHorizontal(lipgloss.Left, mode, status, warning, tokenStyled, space, hints)
 	return statusBarBaseStyle.Width(w).Render(content)
 }
 
