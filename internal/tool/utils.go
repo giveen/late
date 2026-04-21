@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // getToolParam extracts a string parameter from tool arguments
@@ -31,4 +32,32 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// detectLineEnding returns the dominant line ending of the content.
+// If it's consistently CRLF, it returns "\r\n".
+// Otherwise (if consistent LF or mixed), it returns "\n".
+func detectLineEnding(content string) string {
+	crlfCount := strings.Count(content, "\r\n")
+	lfCount := strings.Count(content, "\n")
+
+	if crlfCount > 0 && crlfCount == lfCount {
+		return "\r\n"
+	}
+	// Defaults to Unix for LF-only, mixed, or empty content.
+	return "\n"
+}
+
+// normalizeToUnix converts all CRLF to LF.
+func normalizeToUnix(content string) string {
+	return strings.ReplaceAll(content, "\r\n", "\n")
+}
+
+// restoreLineEnding converts all LF to the specified lineEnding (e.g., "\r\n").
+// If lineEnding is "\n", it does nothing.
+func restoreLineEnding(content, lineEnding string) string {
+	if lineEnding == "\r\n" {
+		return strings.ReplaceAll(content, "\n", "\r\n")
+	}
+	return content
 }

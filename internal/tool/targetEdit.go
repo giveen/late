@@ -53,13 +53,20 @@ func (t *TargetEditTool) Execute(ctx context.Context, args json.RawMessage) (str
 		return "", fmt.Errorf("failed to read file: %v", err)
 	}
 	content := string(data)
+
+	// Detect and normalize line endings
+	lineEnding := detectLineEnding(content)
+	content = normalizeToUnix(content)
+	search := normalizeToUnix(params.Search)
+	replace := normalizeToUnix(params.Replace)
+
 	// Validate search block
-	if params.Search == "" {
+	if search == "" {
 		return "", fmt.Errorf("search block cannot be empty")
 	}
 
 	// count occurrences
-	count := strings.Count(content, params.Search)
+	count := strings.Count(content, search)
 	if count == 0 {
 		return "", fmt.Errorf("search block not found in file")
 	}
@@ -68,7 +75,10 @@ func (t *TargetEditTool) Execute(ctx context.Context, args json.RawMessage) (str
 	}
 
 	// Perform replacement
-	newContent := strings.Replace(content, params.Search, params.Replace, 1)
+	newContent := strings.Replace(content, search, replace, 1)
+
+	// Restore line endings
+	newContent = restoreLineEnding(newContent, lineEnding)
 
 	// Write back
 	if err := os.WriteFile(params.File, []byte(newContent), 0644); err != nil {
