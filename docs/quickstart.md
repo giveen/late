@@ -134,6 +134,18 @@ late worktree remove <path>      # Remove a worktree
 
 > **Tip:** Use worktrees when you want Late to work on a feature in the background while you continue working on another branch.
 
+You can also store the same values in Late's app config file. Precedence is: non-empty environment variables > `config.json` > defaults. Empty environment variables fall back to `config.json`.
+
+Windows config path: `%APPDATA%\late\config.json`
+
+```json
+{
+  "openai_base_url": "http://localhost:8080",
+  "openai_api_key": "your-key",
+  "openai_model": "your-model"
+}
+```
+
 ## MCP Integration
 
 Late supports the Model Context Protocol. Add your MCP servers to `~/.config/late/mcp_config.json` (global) or `.late/mcp_config.json` (project-local):

@@ -153,39 +153,6 @@ func main() {
 	if err != nil {
 		history = []client.ChatMessage{}
 	}
-
-	// Initialize Core Components
-	baseURL := os.Getenv("OPENAI_BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:8080"
-	}
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	modelName := os.Getenv("OPENAI_MODEL")
-	cfg := client.Config{BaseURL: baseURL, APIKey: apiKey, Model: modelName}
-	c := client.NewClient(cfg)
-	c.DiscoverBackend(context.Background())
-
-	// Initialize Subagent Client
-	subModelName := os.Getenv("LATE_SUBAGENT_MODEL")
-	subBaseURL := os.Getenv("LATE_SUBAGENT_BASE_URL")
-	if subBaseURL == "" {
-		subBaseURL = baseURL
-	}
-	subAPIKey := os.Getenv("LATE_SUBAGENT_API_KEY")
-	if subAPIKey == "" {
-		subAPIKey = apiKey
-	}
-
-	subagentClient := c
-	if subModelName != "" {
-		subagentClient = client.NewClient(client.Config{
-			BaseURL: subBaseURL,
-			APIKey:  subAPIKey,
-			Model:   subModelName,
-		})
-		subagentClient.DiscoverBackend(context.Background())
-	}
-
 	// Initialize MCP client
 	mcpClient := mcp.NewClient()
 	defer mcpClient.Close()
@@ -214,6 +181,32 @@ func main() {
 		for toolName, enabled := range appConfig.EnabledTools {
 			enabledTools[toolName] = enabled
 		}
+	}
+
+	// Initialize Core Components
+	resolvedClientConfig := client.ResolveConfig(appConfig)
+	c := client.NewClient(resolvedClientConfig)
+	c.DiscoverBackend(context.Background())
+
+	// Initialize Subagent Client
+	subModelName := os.Getenv("LATE_SUBAGENT_MODEL")
+	subBaseURL := os.Getenv("LATE_SUBAGENT_BASE_URL")
+	if subBaseURL == "" {
+		subBaseURL = resolvedClientConfig.BaseURL
+	}
+	subAPIKey := os.Getenv("LATE_SUBAGENT_API_KEY")
+	if subAPIKey == "" {
+		subAPIKey = resolvedClientConfig.APIKey
+	}
+
+	subagentClient := c
+	if subModelName != "" {
+		subagentClient = client.NewClient(client.Config{
+			BaseURL: subBaseURL,
+			APIKey:  subAPIKey,
+			Model:   subModelName,
+		})
+		subagentClient.DiscoverBackend(context.Background())
 	}
 
 	// Flag overrides

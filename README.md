@@ -67,6 +67,16 @@ export OPENAI_BASE_URL="http://localhost:8080"
 
 > **Note for Windows users:** Use your shell's native export command (e.g. `$env:OPENAI_BASE_URL="http://localhost:8080"` in PowerShell).
 
+Late can also read those values from `config.json` in the Late config directory. Precedence is: non-empty environment variables > `config.json` > defaults. Empty environment variables fall back to `config.json`. On Windows that directory resolves to `%APPDATA%\late`.
+
+```json
+{
+	"openai_base_url": "http://localhost:8080",
+	"openai_api_key": "your-key",
+	"openai_model": "qwen3.5-35b-a3b"
+}
+```
+
 **3. Execute**
 
 ```bash
