@@ -286,3 +286,101 @@ func lateConfigPath(t *testing.T) string {
 
 	return filepath.Join(configDir, "late", "config.json")
 }
+
+func TestResolveOpenAISettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		env     map[string]string
+		present map[string]bool
+		want    OpenAISettings
+	}{
+		{
+			name: "env only",
+			env: map[string]string{
+				"OPENAI_BASE_URL": "https://env.example",
+				"OPENAI_API_KEY":  "env-key",
+				"OPENAI_MODEL":    "env-model",
+			},
+			present: map[string]bool{
+				"OPENAI_BASE_URL": true,
+				"OPENAI_API_KEY":  true,
+				"OPENAI_MODEL":    true,
+			},
+			want: OpenAISettings{BaseURL: "https://env.example", APIKey: "env-key", Model: "env-model"},
+		},
+		{
+			name: "config only",
+			cfg: &Config{
+				OpenAIBaseURL: "https://config.example",
+				OpenAIAPIKey:  "config-key",
+				OpenAIModel:   "config-model",
+			},
+			want: OpenAISettings{BaseURL: "https://config.example", APIKey: "config-key", Model: "config-model"},
+		},
+		{
+			name: "env wins over config",
+			cfg: &Config{
+				OpenAIBaseURL: "https://config.example",
+				OpenAIAPIKey:  "config-key",
+				OpenAIModel:   "config-model",
+			},
+			env: map[string]string{
+				"OPENAI_BASE_URL": "https://env.example",
+				"OPENAI_API_KEY":  "env-key",
+				"OPENAI_MODEL":    "env-model",
+			},
+			present: map[string]bool{
+				"OPENAI_BASE_URL": true,
+				"OPENAI_API_KEY":  true,
+				"OPENAI_MODEL":    true,
+			},
+			want: OpenAISettings{BaseURL: "https://env.example", APIKey: "env-key", Model: "env-model"},
+		},
+		{
+			name: "none set uses default URL",
+			want: OpenAISettings{BaseURL: DefaultOpenAIBaseURL},
+		},
+		{
+			name: "empty env falls back to config",
+			cfg: &Config{
+				OpenAIBaseURL: "https://config.example",
+				OpenAIAPIKey:  "config-key",
+				OpenAIModel:   "config-model",
+			},
+			env: map[string]string{
+				"OPENAI_BASE_URL": "",
+				"OPENAI_API_KEY":  "",
+				"OPENAI_MODEL":    "",
+			},
+			present: map[string]bool{
+				"OPENAI_BASE_URL": true,
+				"OPENAI_API_KEY":  true,
+				"OPENAI_MODEL":    true,
+			},
+			want: OpenAISettings{BaseURL: "https://config.example", APIKey: "config-key", Model: "config-model"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveOpenAISettingsWithEnv(tt.cfg, func(key string) (string, bool) {
+				value, ok := tt.env[key]
+				if tt.present != nil {
+					ok = tt.present[key]
+				}
+				return value, ok
+			})
+
+			if got.BaseURL != tt.want.BaseURL {
+				t.Fatalf("BaseURL = %q, want %q", got.BaseURL, tt.want.BaseURL)
+			}
+			if got.APIKey != tt.want.APIKey {
+				t.Fatalf("APIKey = %q, want %q", got.APIKey, tt.want.APIKey)
+			}
+			if got.Model != tt.want.Model {
+				t.Fatalf("Model = %q, want %q", got.Model, tt.want.Model)
+			}
+		})
+	}
+}

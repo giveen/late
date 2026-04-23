@@ -9,6 +9,16 @@ import (
 	"runtime"
 )
 
+const DefaultOpenAIBaseURL = "http://localhost:8080"
+
+type EnvLookup func(string) (string, bool)
+
+type OpenAISettings struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
 const (
 	configDirPerm  os.FileMode = 0o700
 	configFilePerm os.FileMode = 0o600
@@ -85,6 +95,47 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+func ResolveOpenAISettings(cfg *Config) OpenAISettings {
+	return ResolveOpenAISettingsWithEnv(cfg, os.LookupEnv)
+}
+
+func ResolveOpenAISettingsWithEnv(cfg *Config, lookup EnvLookup) OpenAISettings {
+	resolved := OpenAISettings{BaseURL: DefaultOpenAIBaseURL}
+
+	if cfg != nil {
+		if cfg.OpenAIBaseURL != "" {
+			resolved.BaseURL = cfg.OpenAIBaseURL
+		}
+		resolved.APIKey = cfg.OpenAIAPIKey
+		resolved.Model = cfg.OpenAIModel
+	}
+
+	if value, ok := nonEmptyEnv(lookup, "OPENAI_BASE_URL"); ok {
+		resolved.BaseURL = value
+	}
+	if value, ok := nonEmptyEnv(lookup, "OPENAI_API_KEY"); ok {
+		resolved.APIKey = value
+	}
+	if value, ok := nonEmptyEnv(lookup, "OPENAI_MODEL"); ok {
+		resolved.Model = value
+	}
+
+	return resolved
+}
+
+func nonEmptyEnv(lookup EnvLookup, key string) (string, bool) {
+	if lookup == nil {
+		return "", false
+	}
+
+	value, ok := lookup(key)
+	if !ok || value == "" {
+		return "", false
+	}
+
+	return value, true
 }
 
 func ensureSecureConfigPermissions(configDir, configPath string) error {

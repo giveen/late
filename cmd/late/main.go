@@ -184,7 +184,12 @@ func main() {
 	}
 
 	// Initialize Core Components
-	resolvedClientConfig := client.ResolveConfig(appConfig)
+	resolvedOpenAIConfig := appconfig.ResolveOpenAISettings(appConfig)
+	resolvedClientConfig := client.Config{
+		BaseURL: resolvedOpenAIConfig.BaseURL,
+		APIKey:  resolvedOpenAIConfig.APIKey,
+		Model:   resolvedOpenAIConfig.Model,
+	}
 	c := client.NewClient(resolvedClientConfig)
 	c.DiscoverBackend(context.Background())
 
@@ -192,11 +197,11 @@ func main() {
 	subModelName := os.Getenv("LATE_SUBAGENT_MODEL")
 	subBaseURL := os.Getenv("LATE_SUBAGENT_BASE_URL")
 	if subBaseURL == "" {
-		subBaseURL = resolvedClientConfig.BaseURL
+		subBaseURL = resolvedOpenAIConfig.BaseURL
 	}
 	subAPIKey := os.Getenv("LATE_SUBAGENT_API_KEY")
 	if subAPIKey == "" {
-		subAPIKey = resolvedClientConfig.APIKey
+		subAPIKey = resolvedOpenAIConfig.APIKey
 	}
 
 	subagentClient := c

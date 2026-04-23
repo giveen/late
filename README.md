@@ -1,114 +1,165 @@
-# Late: High-Leverage AI Agent Orchestration
+# Late Quickstart Guide
 
-**Late** (Lightweight AI Terminal Environment) is a deterministic coding agent orchestrator designed to give a solo developer the execution throughput of an entire engineering team.
+This guide gets you productive in Late in under 5 minutes.
 
-Standard AI coding assistants dump massive contexts into a single window, leading to token bloat, amnesia, hallucinations and degraded ability. **Late solves this by mirroring real engineering teams:** a Lead Architect orchestrator maps the codebase and spawns ephemeral, isolated subagents to execute perfect, exact-match code edits.
+## Setup
 
-![Late Orchestrator planning a 4-phase implementation and spawning the first subagent](assets/late-subagent-handoff.png)
-*Late acting as Lead Architect: Orchestrating a 4-phase plan and autonomously spawning atomic subagents.*
-
-> **Built with Late:** As of today, the vast majority of Late is being built *inside* Late.
-
-## 🔥 Why Late?
-
-### 1. The Industry Standard is Broken (And How Late is Different)
-
-Tools like Claude Code, OpenCode, OpenClaw and virtually every other harness right now are naive, brute-force wrappers. They feed your entire session into a single, ever-growing context window. If the agent gets confused, their only solution is to expect you to throw a bigger model at it, either buying a new GPU or paying more for API calls.
-
-Late takes the opposite approach. A lean orchestrator delegates to ephemeral sub-agents, each spawned with a fresh, strictly scoped context. When a sub-agent finishes its task, its history is destroyed. It never pollutes the planner's context. This mirrors how real engineering teams operate: isolated tasks, no noise.
-
-By ruthlessly managing the KV cache, Late guarantees blazing-fast processing speeds and zero context degradation. It refuses to inject unnecessary history that only serves to confuse the model and burn your API budget. 
-
-It runs autonomously on just 5GB VRAM with local models, or drop in any OpenAI-compatible cloud endpoint.
-
-### 2. Delegation Over Context Bloat
-
-**Zero Prompt Bloat:** Standard terminal agents eat 10,000+ tokens just for their system prompt, exhausting your VRAM or burning your money through API usage before you even start working. Late's core system prompt is ruthlessly optimized to ~1,000 tokens, leaving your context window open for what actually matters: your code. Throwing larger models at a problem doesn't solve context degradation. As context pollutes, models suffer massive performance drops.
-* **The Orchestrator:** Holds the master plan, reads the codebase, and delegates.
-* **Atomic Subagents:** Receive fresh, empty context windows containing *only* the exact instructions for a single task.
-
-### 3. Zero Silently Broken Code (Exact-Match Diffs)
-
-Standard agents use fragile diff formats that frequently hallucinate and corrupt files. Late forces subagents to use strict exact-match `search`/`replace` string blocks. If the model fails the match, the edit fails loudly, and the Agent initiates an **autonomous self-healing loop** until it gets it right.
-
-### 4. Zero-Surprise Execution (Human-in-the-Loop)
-
-You shouldn't have to blindly trust a generative model with your terminal. Late surfaces every proposed command for your review — **you approve or reject each action before it runs.**
-* **Speed Heuristic:** Simple read-only commands (`ls`, `cat`, `grep`) are auto-approved to maintain agent velocity. Compound, mutating, or unrecognized commands require your explicit `[y/N]` confirmation before execution. This is a convenience heuristic, not a security sandbox — you are always the final authority.
-* **Project-Scoped:** The agent operates within your project directory by default (`cd` is blocked), keeping it focused on the codebase.
-* **Turn Limits:** Hard configurable caps cleanly cut off infinite hallucinations and prevent runaway token burning.
-
-### 5. Pure Go & No Dependencies
-
-A statically compiled engine. No `node_modules`, no virtual environments, no bloat. Drop the binary in your path and go.
-
-### 6. Local-First & Model Agnostic
-
-Requires any OpenAI-compatible endpoint. Late's ephemeral subagent architecture is designed for consumer hardware: subagent contexts are destroyed on completion and never pollute the planner's window, keeping VRAM and context usage flat regardless of task complexity. Late orchestrates its own codebase development on **5GB VRAM** using a local `Qwen3.5-35B-A3B` (~30 tokens/sec through `llama.cpp`, 65k context, remaining layers offloaded to system RAM). Two simultaneous agent instances run comfortably at ~15 t/s.
-Natively supports both thinking and non-thinking models (including extra support for `Gemma 4`), or can be pointed at heavy-compute cloud endpoints for complex architectural tasks.
-
-## 🚀 Quick Start (Zero Dependencies)
-
-**1. Download the Binary**
-Grab the latest single-binary release for your OS (Linux/macOS/Windows) from the [Releases](https://github.com/mlhher/late/releases) page.
+**1. Set your endpoint** (any OpenAI-compatible API, e.g. llama.cpp, [Google](https://ai.google.dev/gemini-api/docs/openai), [Anthropic](https://platform.claude.com/docs/en/api/openai-sdk), [OpenRouter](https://openrouter.ai/docs/quickstart)): 
 
 ```bash
-chmod +x late-linux-amd64  # (Adjust for your downloaded filename)
-mv late-linux-amd64 ~/.local/bin/late # Ensure ~/.local/bin is in your system's $PATH
-```
-> **Note for Windows users:** Native Windows binaries (`.exe`) are now available but are **experimental**. Alternatively, Late also works on Windows via WSL.
-
-**2. Point to Your Model**
-Point Late to any OpenAI-compatible API endpoint (local or cloud).
-
-```bash
+# Local (e.g. llama.cpp)
 export OPENAI_BASE_URL="http://localhost:8080"
+
+# Cloud (e.g. Google)
+export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_MODEL="your-model-name"
 ```
+> **Windows:** Use your preferred shell's syntax for all environment variables (e.g., `$env:OPENAI_BASE_URL="http://localhost:8080"` for PowerShell).
 
-> **Note for Windows users:** Use your shell's native export command (e.g. `$env:OPENAI_BASE_URL="http://localhost:8080"` in PowerShell).
-
-Late can also read those values from `config.json` in the Late config directory. Precedence is: non-empty environment variables > `config.json` > defaults. Empty environment variables fall back to `config.json`. On Windows that directory resolves to `%APPDATA%\late`.
-
-```json
-{
-	"openai_base_url": "http://localhost:8080",
-	"openai_api_key": "your-key",
-	"openai_model": "qwen3.5-35b-a3b"
-}
-```
-
-**3. Execute**
+**2. Launch Late:**
+Late operates within your current working directory. Always launch it from the root of the project you want to work on.
 
 ```bash
+cd your-project
 late
 ```
 
-📖 Next Steps: See the **[Quickstart Guide](docs/quickstart.md)** for advanced setup (e.g. API keys, subagent models), keyboard shortcuts, and core features.
+> **macOS:** If macOS blocks the binary, run this command in your terminal (adjust the path if needed): `xattr -d com.apple.quarantine ~/.local/bin/late`
 
-## 🔨 Build from Source
+> **Windows (Experimental):** Native Windows binaries (`.exe`) are currently experimental. If you hit a bug, please check the issue tracker.
 
-If you prefer to compile Late yourself (requires Go):
+**3. Hybrid Routing (Optional):**
+By default, Late uses the same model for both the Lead Architect (orchestrator) and the ephemeral workers (subagents). You can mix and match models by setting separate environment variables.
+
+This is useful for using a large, smart model for planning and a fast, cheap model for execution:
 
 ```bash
-git clone https://github.com/mlhher/late.git
-cd late
-make build
-make install
+# Example: Local Architect with a Cloud Subagent
+export LATE_SUBAGENT_MODEL="gemma-4-e4b"
+export LATE_SUBAGENT_BASE_URL="http://10.8.0.2:8080" # (Optional) falls back to OPENAI_BASE_URL
+export LATE_SUBAGENT_API_KEY="your-other-key"        # (Optional) falls back to OPENAI_API_KEY
 ```
 
-## 🛠️ Advanced Features
+## Interface
 
-* **Native MCP Integration:** Dynamically map external MCP servers directly into Late via standard I/O.
-* **Stateful Resilience:** The Orchestrator maintains continuous, newest-first session history on disk (`~/.local/share/late`), ensuring perfect context retention across runs.
-* **Git Worktree Support:** Run independent, parallel Late instances across multiple Git worktrees for isolated feature development without context switching.
+Late is a terminal UI with three areas: the **chat viewport** (scrollable history), the **input box** (bottom), and the **status bar** (shows mode, status, token count, and available keybindings).
 
-For more information, check out the [quickstart guide](docs/quickstart.md).
+### Keybindings
 
-## 📜 License: BSL 1.1
+| Key | Action |
+| --- | --- |
+| `Enter` | Send your message |
+| `↑` `↓` `PgUp` `PgDn` | Scroll the chat viewport |
+| `Tab` | Switch between agent tabs (orchestrator ↔ subagents) |
+| `y` / `n` | Approve or deny a tool call when prompted |
+| `Ctrl+G` | Stop the current agent (cancel generation) |
+| `Esc` / `Ctrl+C` | Quit Late |
 
-We built this to generate real engineering leverage, not to supply free backend infrastructure for AI startups.
+### Agent Tabs
 
-* **Free for Builders:** You may use Late freely to write code for any project, including your own commercial startups. We do not restrict your output.
-* **Commercial Restrictions:** You may not monetize Late itself (e.g., wrapping our orchestration engine into a paid AI service), nor deploy Late as internal infrastructure within enterprise environments without a commercial agreement.
+When Late spawns subagents, each one gets its own tab. Use `Tab` to cycle through them:
 
-*Late safely converts to an open-source GPLv2 license on February 21, 2030.*
+- **Main** — the orchestrator (Lead Architect). It plans and delegates.
+- **Subagent tabs** — ephemeral workers executing isolated tasks. They appear when spawned and disappear when finished.
+
+The status bar at the bottom shows which agent you're currently viewing and its state (Idle, Thinking, Streaming, etc.).
+
+> **Tip:** If a subagent seems stuck, switch to it with `Tab` to see what it's doing. You can stop it with `Ctrl+G` without affecting the orchestrator.
+
+## How to Give Good Instructions
+
+Late works best with clear, specific instructions. Some examples:
+
+```
+# Good
+Add input validation to the CreateUser handler in api/users.go.
+Check for empty email and name fields, return 400 with a JSON error.
+
+# Good
+Refactor the database package to use connection pooling.
+The pool config should come from environment variables.
+
+# Bad
+Make the code better.
+```
+
+Late will read your codebase, plan the implementation, and ask you for approval. Make sure to read the generated implementation plan (`./implementation_plan.md`) and the intended changes before approving.
+
+## Tool Approval
+
+When the agent wants to run a command or edit a file, you'll see a confirmation prompt:
+
+```
+The agent wants to execute bash.
+  {"command": "go test ./..."}
+> Press [ y ] to Approve  |  [ n ] to Deny
+```
+
+- **Read-only commands** (`ls`, `cat`, `grep`, etc.) are auto-approved for speed (Note: the listed commands can still require permission if Late deems the agents activity suspicious)
+- **Everything else** requires your explicit `y` / `n`.
+
+> **Note:** On Windows currently, every command will require your explicit `y` / `n` approval. This will be resolved in a future release.
+
+## Common Flags
+
+| Flag | Description |
+| --- | --- |
+| `--help` | Show all flags and commands |
+| `--version` | Show version information |
+| `--gemma-thinking` | Inject thinking tokens for Gemma 4 models |
+| `--subagent-max-turns <n>` | Set max turns per subagent (default: 500) |
+| `--append-system-prompt "..."` | Append text to the system prompt (e.g. further instructions) |
+
+## Sessions
+
+Late automatically saves your session history. Resume or manage sessions:
+
+```bash
+late session list          # List all saved sessions
+late session list -v       # Verbose listing with details
+late session load <id>     # Resume a previous session
+late session delete <id>   # Delete a session
+```
+
+## Git Worktrees
+
+Late is designed for parallel development. You can manage Git worktrees directly to run separate agent instances in isolated environments:
+
+```bash
+late worktree list               # List all worktrees
+late worktree active             # Show current worktree
+late worktree create <path> [br] # Create a new worktree at <path>
+late worktree remove <path>      # Remove a worktree
+```
+
+> **Tip:** Use worktrees when you want Late to work on a feature in the background while you continue working on another branch.
+
+You can also store the same values in Late's app config file. Precedence is: non-empty environment variables > `config.json` > defaults. Empty environment variables fall back to `config.json`.
+
+Windows config path: `%APPDATA%\late\config.json`
+
+```json
+{
+  "openai_base_url": "http://localhost:8080",
+  "openai_api_key": "your-key",
+  "openai_model": "your-model"
+}
+```
+
+## MCP Integration
+
+Late supports the Model Context Protocol. Add your MCP servers to `~/.config/late/mcp_config.json` (global) or `.late/mcp_config.json` (project-local):
+
+```json
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "npx",
+      "args": ["-y", "my-mcp-server"]
+    }
+  }
+}
+```
+
+MCP tools are automatically available to the agent after connecting.
