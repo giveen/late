@@ -1,5 +1,7 @@
 # Late: High-Leverage AI Agent Orchestration
 
+> Every other coding agent feeds your session into one context window until it hallucinates. Late delegates like a real engineering team: one architect plans, ephemeral subagents execute exact edits, nothing bleeds between tasks. Single static binary, zero config, zero dependencies — download it, point it at a model, go.
+
 [![GitHub Stars](https://img.shields.io/github/stars/mlhher/late-cli?style=social)](https://github.com/mlhher/late-cli/stargazers)
 
 **Late** (Lightweight AI Terminal Environment) is a deterministic coding agent orchestrator designed to give a solo developer the execution throughput of an entire engineering team.
@@ -10,6 +12,21 @@ Standard AI coding assistants dump massive contexts into a single window, leadin
 *Late acting as Lead Architect: Orchestrating a multi-phase plan and autonomously spawning atomic subagents.*
 
 > **Built with Late:** As of today, the vast majority of Late is being built *inside* Late.
+
+### Key Features
+
+- **Orchestrator + subagents** — Lead Architect plans, ephemeral subagents execute with fresh contexts that never pollute the planner
+- **Exact-match diffs** — strict `search`/`replace` blocks with autonomous self-healing on mismatch
+- **Hybrid model routing** — use a smart model for planning and a fast/cheap model for execution
+- **Human-in-the-loop** — auto-approves reads, hard-stops for mutations, with session/project/global trust scopes and TTL decay
+- **Session save/resume** — checkpoint and resume long-running sessions across restarts
+- **MCP integration** — connect to Model Context Protocol servers for extended tooling
+- **Agent Skills** — composable instruction packs from [agentskills.io](https://agentskills.io/)
+- **Git worktrees** — parallel isolated agent instances across branches
+- **Pure Go, zero dependencies** — single static binary, no runtimes, no `node_modules`
+- **Local-first & model-agnostic** — orchestrates on 5GB VRAM; works with any OpenAI-compatible endpoint
+
+---
 
 ## 🔥 Why Late?
 
@@ -50,6 +67,8 @@ A statically compiled engine. No `node_modules`, no virtual environments, no blo
 Requires any OpenAI-compatible endpoint. Late's ephemeral subagent architecture is designed for consumer hardware: subagent contexts are destroyed on completion and never pollute the planner's window, keeping VRAM and context usage flat regardless of task complexity. Late orchestrates its own codebase development on **5GB VRAM** using a local `Qwen3.6-35B-A3B` (~30 tokens/sec through `llama.cpp`, 65k context, remaining layers offloaded to system RAM). Two simultaneous agent instances run comfortably at ~15 t/s.
 Natively supports both thinking and non-thinking models (including extra support for `Gemma 4`), or can be pointed at heavy-compute cloud endpoints for complex architectural tasks.
 
+---
+
 ## 🚀 Quick Start (Zero Dependencies)
 
 **1. Download the Binary**
@@ -79,6 +98,8 @@ late
 
 > 🌟 **Are you finding Late useful?** If Late is helping you build things, consider leaving a star on [GitHub](https://github.com/mlhher/late-cli) so other developers can find it.
 
+---
+
 ## 🔨 Build from Source
 
 If you prefer to compile Late yourself (requires Go):
@@ -90,6 +111,8 @@ make build
 make install
 ```
 
+---
+
 ## 🛠️ Advanced Features
 
 * **Native MCP Integration:** Dynamically map external MCP servers directly into Late via standard I/O.
@@ -99,6 +122,8 @@ make install
 
 For more information, check out the [quickstart guide](docs/quickstart.md).
 
+---
+
 ## 📜 License: BSL 1.1
 
 We built this to generate real engineering leverage, not to supply free backend infrastructure for AI startups.
@@ -107,3 +132,7 @@ We built this to generate real engineering leverage, not to supply free backend 
 * **Commercial Restrictions:** You may not monetize Late itself (e.g., wrapping our orchestration engine into a paid AI service), nor deploy Late as internal infrastructure within enterprise environments without a commercial agreement.
 
 *Late safely converts to an open-source GPLv2 license on February 21, 2030.*
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/chart?repos=mlhher/late-cli&type=date&legend=top-left)](https://www.star-history.com/?repos=mlhher%2Flate-cli&type=date&logscale=&legend=top-left)

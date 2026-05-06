@@ -107,6 +107,9 @@ The agent wants to execute a bash command.
 
 This keeps one-off actions safe while reducing repetitive prompts when you trust a tool in a broader scope.
 
+> **Tip:** Approval keys (`y`, `n`, etc.) only work if the input box is **empty**. If you have already started typing a message, Late will prioritize your text. You can send your message first (it will be **queued** and processed after the tool call finishes) and then use the single-key shortcuts once the input box is cleared.
+
+
 ### Permission Decay (TTL)
 
 "Always" approvals are not permanent. Late uses TTL (time-to-live) so trust decays over time:
