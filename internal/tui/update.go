@@ -287,10 +287,16 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 		// Commit log view key handling
 		if m.Mode == ViewCommitLog {
 			if m.CommitDetail != "" {
-				// In detail view, any key goes back to list
-				if msg.String() == "esc" || msg.String() == "enter" {
+				switch msg.String() {
+				case "esc", "enter":
 					m.CommitDetail = ""
 					m.updateViewport()
+					return m, nil
+				case "up":
+					m.Viewport.SetYOffset(m.Viewport.YOffset() - 1)
+					return m, nil
+				case "down":
+					m.Viewport.SetYOffset(m.Viewport.YOffset() + 1)
 					return m, nil
 				}
 				return m, nil
@@ -299,10 +305,12 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			case "up":
 				m.CommitIndex = max(0, m.CommitIndex-1)
 				m.updateViewport()
+				m.Viewport.SetYOffset(max(0, 2+m.CommitIndex*3-m.Viewport.Height()/2))
 				return m, nil
 			case "down":
 				m.CommitIndex = min(len(m.CommitEntries)-1, m.CommitIndex+1)
 				m.updateViewport()
+				m.Viewport.SetYOffset(max(0, 2+m.CommitIndex*3-m.Viewport.Height()/2))
 				return m, nil
 			case "enter":
 				if m.CommitIndex >= 0 && m.CommitIndex < len(m.CommitEntries) {

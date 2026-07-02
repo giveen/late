@@ -49,7 +49,6 @@ var AvailableCommands = []string{
 	"/clear",
 	"/help",
 	"/log",
-	"/model",
 	"/quit",
 }
 
