@@ -32,28 +32,38 @@ func NewReadFileTool() *ReadFileTool {
 }
 
 func (t *ReadFileTool) Name() string        { return "read_file" }
-func (t *ReadFileTool) Description() string { return "Read the content of a file" }
+func (t *ReadFileTool) Description() string {
+	return "Read the content of a file. When read_imports is true, returns only the Go import block instead of the full file."
+}
 func (t *ReadFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"path": { "type": "string", "description": "Path to the file to read" },
 			"start_line": { "type": "integer", "description": "Optional: Start reading from this line number (1-indexed)" },
-			"end_line": { "type": "integer", "description": "Optional: Stop reading at this line number (inclusive)" }
+			"end_line": { "type": "integer", "description": "Optional: Stop reading at this line number (inclusive)" },
+			"read_imports": { "type": "boolean", "description": "Optional: If true, return only the Go import block (fast, no full file read). Ignores start_line/end_line." }
 		},
 		"required": ["path"]
 	}`)
 }
 func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		Path      string `json:"path"`
-		StartLine int    `json:"start_line"`
-		EndLine   int    `json:"end_line"`
+		Path        string `json:"path"`
+		StartLine   int    `json:"start_line"`
+		EndLine     int    `json:"end_line"`
+		ReadImports bool   `json:"read_imports"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
 	}
 
+	// --- Import-only mode ---
+	if params.ReadImports {
+		return readImportBlock(params.Path)
+	}
+
+	// --- Normal mode (existing logic) ---
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
 		return "", err
@@ -111,11 +121,83 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 func (t *ReadFileTool) RequiresConfirmation(args json.RawMessage) bool { return false }
 
 func (t *ReadFileTool) CallString(args json.RawMessage) string {
+	readImports := getToolParam(args, "read_imports")
 	path := getToolParam(args, "path")
 	if cwd, err := os.Getwd(); err == nil {
 		path = strings.Replace(path, cwd, ".", 1)
 	}
+	if readImports == "true" {
+		return fmt.Sprintf("Reading imports of %s", truncate(path, 50))
+	}
 	return fmt.Sprintf("Reading file %s", truncate(path, 50))
+}
+
+// readImportBlock reads only the import block from a Go source file.
+// Returns "package X (no imports)" if there's no import block.
+// Designed for the read_imports=true mode of ReadFileTool.
+func readImportBlock(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(string(data), "\n")
+
+	// Find package declaration
+	pkg := ""
+	importStart := -1
+	importEnd := -1
+	importSingle := -1 // single-line import like `import "fmt"`
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Extract package name
+		if pkg == "" && strings.HasPrefix(trimmed, "package ") {
+			pkg = strings.TrimPrefix(trimmed, "package ")
+		}
+
+		// Detect grouped imports: import ( ... )
+		if strings.HasPrefix(trimmed, "import (") {
+			importStart = i
+			continue
+		}
+		if importStart >= 0 && strings.TrimSpace(trimmed) == ")" {
+			importEnd = i
+			break
+		}
+
+		// Detect single-line import: import "fmt" or import "strings"
+		if strings.HasPrefix(trimmed, "import ") && !strings.HasPrefix(trimmed, "import (") {
+			importSingle = i
+		}
+	}
+
+	// No imports at all
+	if importStart < 0 && importSingle < 0 {
+		if pkg != "" {
+			return fmt.Sprintf("package %s (no imports)", pkg), nil
+		}
+		return "(no imports)", nil
+	}
+
+	// Single import
+	if importSingle >= 0 {
+		line := lines[importSingle]
+		lineStr := fmt.Sprintf("%d | %s\n", importSingle+1, line)
+		if pkg != "" {
+			return fmt.Sprintf("package %s\n%s", pkg, lineStr), nil
+		}
+		return lineStr, nil
+	}
+
+	// Grouped imports: import ( ... ) block
+	var sb strings.Builder
+	for i := importStart; i <= importEnd; i++ {
+		lineStr := fmt.Sprintf("%d | %s\n", i+1, lines[i])
+		sb.WriteString(lineStr)
+	}
+	return sb.String(), nil
 }
 
 // WriteFileTool writes content to a file.

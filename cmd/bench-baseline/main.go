@@ -235,7 +235,7 @@ func main() {
 	}
 
 	fmt.Println("  " + strings.Repeat("-", 80))
-	fmt.Printf("  %-45s %6s %6d %8d %10s\n",
+	fmt.Printf("  %-45s %6s %6s %8d %10s\n",
 		"TOTALS", "", "", totalFilesRead, comma(totalChars))
 	fmt.Println()
 

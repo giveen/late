@@ -20,6 +20,119 @@ const maxSearchChars = 32768
 // Honors .gitignore when searching inside a git repository.
 type SearchTool struct{}
 
+// fileQuickMeta holds metadata about a source file extracted without reading
+// the full body. Used in files_with_matches mode so agents can make strategic
+// decisions about which files to read.
+type fileQuickMeta struct {
+	Pkg         string // Go package name (empty for non-Go files)
+	Imports     int    // number of import statements
+	Lines       int    // total line count
+	IsGo        bool   // true if file has .go extension
+	HasImports  bool   // true if import count > 0
+}
+
+// getFileQuickMeta reads the first 4KB of a file to extract lightweight
+// metadata: line count, Go package name, and import count. Designed to be
+// fast — never reads the full file unless it's tiny.
+func getFileQuickMeta(path string) fileQuickMeta {
+	var meta fileQuickMeta
+	meta.IsGo = strings.HasSuffix(path, ".go")
+
+	// Read only first 4KB — enough for package decl + imports block
+	f, err := os.Open(path)
+	if err != nil {
+		return meta
+	}
+	defer f.Close()
+
+	buf := make([]byte, 4096)
+	n, err := f.Read(buf)
+	if err != nil && n == 0 {
+		return meta
+	}
+	content := string(buf[:n])
+
+	// Count total lines (estimate — may undercount on huge files but
+	// close enough for strategic decisions)
+	meta.Lines = strings.Count(content, "\n")
+
+	if !meta.IsGo {
+		return meta
+	}
+
+	// Extract package name
+	if m := goPkgRe.FindStringSubmatch(content); len(m) > 1 {
+		meta.Pkg = m[1]
+	}
+
+	// Count imports by scanning for import lines
+	meta.Imports = countImportLines(content)
+	meta.HasImports = meta.Imports > 0
+
+	return meta
+}
+
+// goPkgRe matches the Go package declaration.
+var goPkgRe = regexp.MustCompile(`(?m)^package (\w+)`)
+
+// countImportLines counts import statements in Go source content.
+// Handles grouped imports: import ("fmt"\n"os") → 2
+// And single imports: import "fmt" → 1
+func countImportLines(content string) int {
+	count := 0
+	inGroup := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "import (") {
+			inGroup = true
+			continue
+		}
+		if inGroup {
+			if trimmed == ")" {
+				inGroup = false
+				continue
+			}
+			// Skip blank lines and comments inside import groups
+			if trimmed == "" || strings.HasPrefix(trimmed, "//") ||
+				strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") {
+				continue
+			}
+			// Count quoted paths: "fmt" or "github.com/..."
+			if strings.HasPrefix(trimmed, `"`) {
+				count++
+			}
+			continue
+		}
+		// Single-line import: import "fmt"
+		if strings.HasPrefix(trimmed, "import ") && !strings.HasPrefix(trimmed, "import (") {
+			count++
+		}
+	}
+	return count
+}
+
+// formatMeta formats fileQuickMeta into a compact right-aligned annotation
+// suitable for appending to a file path in search output.
+func formatMeta(m fileQuickMeta) string {
+	if !m.IsGo {
+		if m.Lines > 0 {
+			return fmt.Sprintf("  (%d lines)", m.Lines)
+		}
+		return ""
+	}
+	if m.Pkg != "" {
+		if m.HasImports {
+			return fmt.Sprintf("  (%d lines, %d imports, pkg: %s)", m.Lines, m.Imports, m.Pkg)
+		}
+		return fmt.Sprintf("  (%d lines, 0 imports, pkg: %s)", m.Lines, m.Pkg)
+	}
+	if m.Lines > 0 {
+		return fmt.Sprintf("  (%d lines)", m.Lines)
+	}
+	return ""
+}
+
 func (t *SearchTool) Name() string { return "search_tool" }
 func (t *SearchTool) Description() string {
 	return "PREFERRED over bash grep/find/rg. " +
@@ -228,7 +341,9 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 
 		switch params.OutputMode {
 		case "files_with_matches":
-			line := path + "\n"
+			meta := getFileQuickMeta(path)
+			metaStr := formatMeta(meta)
+			line := path + metaStr + "\n"
 			if sb.Len()+len(line) > maxSearchChars {
 				truncated = true
 				return stopErr
@@ -238,7 +353,6 @@ func (t *SearchTool) Execute(ctx context.Context, args json.RawMessage) (string,
 				truncated = true
 				return stopErr
 			}
-
 		case "count":
 			line := fmt.Sprintf("%s: %d\n", path, fileMatches)
 			if sb.Len()+len(line) > maxSearchChars {

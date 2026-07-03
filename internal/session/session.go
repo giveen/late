@@ -2,15 +2,23 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/tool"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// maxToolResultChars is the maximum size of a tool result stored inline in the
+// session history JSON. Results larger than this are written to a cache file
+// and replaced with a reference marker. This prevents `cat go.mod` and similar
+// large dumps from bloating the session file and future LLM context windows.
+const maxToolResultChars = 5120
 
 // Session manages the chat state and interacts with the LLM client.
 type Session struct {
@@ -290,6 +298,54 @@ func (s *Session) SystemPrompt() string {
 	return s.systemPrompt
 }
 
+// toolResultCacheDir returns the path to the cache directory for large tool
+// results, creating it if necessary.
+func toolResultCacheDir() (string, error) {
+	sessionsDir, err := SessionDir()
+	if err != nil {
+		return "", err
+	}
+	cacheDir := filepath.Join(sessionsDir, ".cache")
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create tool result cache: %w", err)
+	}
+	return cacheDir, nil
+}
+
+// prepareHistoryForPersistence creates a copy of history with tool results
+// larger than maxToolResultChars replaced by cache references. The original
+// history (in memory) is not modified — the truncation only affects what's
+// persisted to disk. On session restore, full content can be fetched from
+// the cache directory.
+func prepareHistoryForPersistence(history []client.ChatMessage) []client.ChatMessage {
+	cacheDir, err := toolResultCacheDir()
+	if err != nil {
+		// Can't create cache dir — save everything inline (safe fallback)
+		return history
+	}
+
+	result := make([]client.ChatMessage, len(history))
+	copy(result, history)
+
+	for i, msg := range result {
+		if msg.Role != "tool" || len(msg.Content.Text) <= maxToolResultChars {
+			continue
+		}
+		text := msg.Content.Text
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(text)))[:16]
+		cachePath := filepath.Join(cacheDir, hash)
+
+		// Write cache file (best-effort — skip silently on failure)
+		if err := os.WriteFile(cachePath, []byte(text), 0600); err == nil {
+			result[i].Content.Text = fmt.Sprintf(
+				"[result cached: %s — %d chars on disk]",
+				hash, len(text))
+		}
+	}
+
+	return result
+}
+
 func (s *Session) saveAndNotify() error {
 	if len(s.History) == 0 {
 		return nil
@@ -297,7 +353,9 @@ func (s *Session) saveAndNotify() error {
 	if s.HistoryPath == "" {
 		return nil // Skip saving if no path provided (e.g., subagents)
 	}
-	if err := SaveHistory(s.HistoryPath, s.History); err != nil {
+	// Truncate large tool results for persistence only; in-memory history unchanged
+	saveHistory := prepareHistoryForPersistence(s.History)
+	if err := SaveHistory(s.HistoryPath, saveHistory); err != nil {
 		return err
 	}
 	return s.UpdateSessionMetadata()
