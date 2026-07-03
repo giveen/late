@@ -265,6 +265,11 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			}
 
+			// Handle slash commands
+			if strings.HasPrefix(input, "/") {
+				return m.handleSlashCommand(input)
+			}
+
 			// Preflight context check
 			maxTokens := m.Focused.MaxTokens()
 			if focusedState.State == StateIdle && maxTokens > 0 && !focusedState.ContextWarningShown {
@@ -558,4 +563,23 @@ func (m Model) interruptFocusedAgent() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// handleSlashCommand processes slash-prefixed user commands like /quit.
+// Returns the updated model and any commands to execute.
+func (m Model) handleSlashCommand(input string) (Model, tea.Cmd) {
+	parts := strings.Fields(strings.ToLower(input))
+	if len(parts) == 0 {
+		m.Err = fmt.Errorf("empty command")
+		return m, nil
+	}
+
+	cmd := parts[0]
+	switch cmd {
+	case "/quit", "/exit":
+		return m, tea.Quit
+	default:
+		m.Err = fmt.Errorf("unknown command: %s. Available: /quit, /exit", cmd)
+		return m, nil
+	}
 }
