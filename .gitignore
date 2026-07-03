@@ -33,3 +33,9 @@ progress.md
 # OS
 .DS_Store
 Thumbs.db
+
+# Agent instructions
+AGENTS.md
+CLAUDE.md
+handoff/
+progress.md
