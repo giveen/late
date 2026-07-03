@@ -585,6 +585,12 @@ func readFileContent(path string, matchFunc func(string) bool, contextLines, max
 // searchByNames matches files by filename glob instead of searching contents.
 // Skips content reading entirely — much faster for filename discovery.
 func searchByNames(ctx context.Context, searchPath, pattern, include, exclude, outputMode string, maxResults int, recursive bool, gi *GitIgnore, repoRoot string) (string, error) {
+	// Auto-coerce common regex patterns to glob equivalents. Agents often
+	// pass \.go$ or _test\.go$ because search_tool normally uses regex.
+	// Detect these and convert silently so the user gets results instead
+	// of "No matches found".
+	pattern = coerceRegexToGlob(pattern)
+
 	var sb strings.Builder
 	fileCount := 0
 	truncated := false
@@ -694,6 +700,63 @@ func searchByNames(ctx context.Context, searchPath, pattern, include, exclude, o
 		result += "\n... (output truncated)"
 	}
 	return result, nil
+}
+
+// coerceRegexToGlob converts common regex patterns to glob equivalents so
+// agents who reflexively pass `\.go$` or `_test\.go$` still get results
+// when using search_names:true.
+func coerceRegexToGlob(pattern string) string {
+	// Already looks like a simple glob (no regex metacharacters) — pass through
+	hasMeta := strings.ContainsAny(pattern, `\$^()+?|[]{}`)
+	if !hasMeta {
+		// Also check for unescaped .* or .+ which indicate regex intent
+		if strings.Contains(pattern, ".*") || strings.Contains(pattern, ".+") {
+			hasMeta = true
+		}
+	}
+	if !hasMeta {
+		return pattern
+	}
+
+	// Track whether anchors were present so we can infer wildcards
+	hadAnchorStart := strings.HasPrefix(pattern, "^")
+	hadAnchorEnd := strings.HasSuffix(pattern, "$")
+
+	result := pattern
+
+	// Strip anchors: ^foo → foo, foo$ → foo
+	result = strings.TrimPrefix(result, "^")
+	result = strings.TrimSuffix(result, "$")
+
+	// Convert `\.` → `.`
+	result = strings.ReplaceAll(result, `\.`, ".")
+
+	// Convert `.*` → `*`
+	result = strings.ReplaceAll(result, `.*`, "*")
+
+	// Convert `.+` → `*`
+	result = strings.ReplaceAll(result, `.+`, "*")
+
+	// Convert `(?:` and `(` → nothing (crude but good enough for simple patterns)
+	result = strings.ReplaceAll(result, "(?:", "")
+	result = strings.ReplaceAll(result, "(", "")
+	result = strings.ReplaceAll(result, ")", "")
+	result = strings.ReplaceAll(result, "|", "")
+
+	// If the result has no wildcards but had regex anchors, the user was
+	// matching a suffix/prefix — add implied wildcards.
+	// e.g. `.go` (from `\.go$`) → `*.go`
+	//      `foo` (from `^foo`) → `foo*`
+	if !strings.ContainsAny(result, "*?[") {
+		if hadAnchorStart {
+			result = result + "*"
+		}
+		if hadAnchorEnd {
+			result = "*" + result
+		}
+	}
+
+	return result
 }
 
 // truncateLine truncates a single line at 1000 chars to prevent context poisoning.

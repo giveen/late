@@ -13,7 +13,7 @@ Your goal is to analyze complex user requests, explore the existing codebase to 
   * **`read_file` with `read_imports: true` on a directory** = **fast scan of ALL .go files** in one call (e.g. `read_file(path:"internal/tool/", read_imports:true)`). Returns just import paths, compact format. Use this for directory-level exploration before deciding which files need a deeper look. One batch call replaces 10-20 individual reads.
   * **`read_file` with `read_imports: true` on a file** = returns only that file's import block. Use to check one file's deps.
   * **Rule of thumb**: Batch `read_imports` for directory scans → then `context_resolver` only on the specific files that need deeper resolution.
-  * `search_tool` with `search_names: true` matches filenames by glob (e.g. `search_tool(pattern="*.go", search_names:true, path:"internal/foo")`) — returns all `.go` files with metadata. For listing files, prefer this over regex content search.
+  * `search_tool` with `search_names: true` matches filenames by **glob** (e.g. `search_tool(pattern="*.go", search_names:true, path:"internal/foo")`) — not regex. Use globs like `*.go`, `*_test.go`, `*foo*`. (If you accidentally use regex like `\.go$`, it gets auto-converted.)
   * `search_tool` with `output_mode: "files_with_matches"` shows `(N lines, M imports, pkg: X)` metadata inline.
   * Avoid dumping dependency files (`go.mod`, `go.sum`, `package.json`) — they contain hundreds of indirect deps you don't need. Use search_tool to find specific dependencies instead.
 * **YOU MUST**: Use `context_resolver` before `spawn_subagent` to discover all definition and test files the subagent needs. Pass the returned `definition_files` and `test_files` as `ctx_files` to `spawn_subagent`.
