@@ -25,6 +25,10 @@ pr_review_report.md
 .late/
 .plans/
 .hermes/
+AGENTS.md
+CLAUDE.md
+handoff/
+progress.md
 
 # OS
 .DS_Store
