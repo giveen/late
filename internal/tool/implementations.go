@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -33,7 +34,8 @@ func NewReadFileTool() *ReadFileTool {
 
 func (t *ReadFileTool) Name() string        { return "read_file" }
 func (t *ReadFileTool) Description() string {
-	return "Read the content of a file. When read_imports is true, returns only the Go import block instead of the full file."
+	return "Read the content of a file. With read_imports:true, returns only imports. " +
+		"When path is a directory with read_imports:true, returns imports from all .go files in it."
 }
 func (t *ReadFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -60,6 +62,10 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	// --- Import-only mode ---
 	if params.ReadImports {
+		// Check if path is a directory — batch mode
+		if fi, err := os.Stat(params.Path); err == nil && fi.IsDir() {
+			return readImportBlockForDir(params.Path)
+		}
 		return readImportBlock(params.Path)
 	}
 
@@ -198,6 +204,67 @@ func readImportBlock(path string) (string, error) {
 		sb.WriteString(lineStr)
 	}
 	return sb.String(), nil
+}
+
+// readImportBlockForDir reads import blocks from all .go files in a directory
+// (non-recursive) and returns a compact summary. One call replaces N individual
+// read_file(read_imports:true) calls.
+func readImportBlockForDir(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("reading directory: %w", err)
+	}
+
+	var sb strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		imports, err := readImportBlock(path)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("%s: (error: %v)\n", entry.Name(), err))
+			continue
+		}
+		// Compact format: just the important bits
+		if strings.Contains(imports, "(no imports)") {
+			sb.WriteString(fmt.Sprintf("%s: (no imports)\n", entry.Name()))
+		} else {
+			// Extract just the package+import paths without line numbers
+			paths := extractImportPaths(imports)
+			sb.WriteString(fmt.Sprintf("%s: %s\n", entry.Name(), paths))
+		}
+	}
+
+	result := sb.String()
+	if result == "" {
+		return "(no .go files found)", nil
+	}
+	return result, nil
+}
+
+// extractImportPaths parses a readImportBlock result and returns a compact
+// comma-separated list of import paths, e.g. "\"fmt\", \"strings\", \"mvdan.cc/sh/v3/syntax\""
+func extractImportPaths(importBlock string) string {
+	var paths []string
+	for _, line := range strings.Split(importBlock, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Skip line numbers ("3 | import ("), package decls, parens, comments
+		if trimmed == "" || strings.HasPrefix(trimmed, "import") ||
+			trimmed == "(" || trimmed == ")" ||
+			strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") ||
+			strings.HasPrefix(trimmed, "package ") {
+			continue
+		}
+		// Strip leading line number if present: "4 | \"fmt\"" → "\"fmt\""
+		if idx := strings.Index(trimmed, "| "); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[idx+2:])
+		}
+		if trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return strings.Join(paths, ", ")
 }
 
 // WriteFileTool writes content to a file.

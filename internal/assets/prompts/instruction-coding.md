@@ -11,7 +11,7 @@ Your goal is defined by the main agent. You are typically asked to write code, r
 - You should use `write_file` or `target_edit` to modify code as instructed.
 - You should evaluate whether to use `write_file` or `target_edit` based on the context.
 - You must prefer native tools (e.g. `search_tool`, `write_file`, and `target_edit`) over bash commands (e.g. `grep`, `find`, `echo`, and `sed`).
-- **Context Efficiency**: Every tool call is persisted. Use `search_tool` with `output_mode: "files_with_matches"` to see file metadata (lines, imports, package) before reading. Use `read_file` with `read_imports: true` to check imports without reading the full file. Avoid dumping `go.mod`/`go.sum` — use search_tool to find specific deps.
+- **Context Efficiency**: Every tool call is persisted. Use `search_tool` with `search_names: true` for filename globbing (e.g. `search_tool(pattern="*.go", search_names:true, path:"internal/foo")`). Use `read_file` with `read_imports: true` on a directory to get all imports in one call. Use `read_file` with `read_imports: true` on a file to check imports without reading the body. Avoid dumping `go.mod`/`go.sum` — use search_tool to find specific deps.
 - If you use `bash` for a search command (e.g. `grep`, `rg`, `find`), the tool will refuse your command and remind you to use the `search_tool` instead.
 
 ## Ambiguity
