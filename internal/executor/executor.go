@@ -134,6 +134,7 @@ func RegisterTools(reg *tool.Registry, enabledTools map[string]bool, isPlanning 
 	if isPlanning {
 		// Planning-only tools
 		reg.Register(tool.WriteImplementationPlanTool{})
+		reg.Register(tool.NewContextResolverTool())
 	} else {
 		// Coding-only tools
 		if enabledTools["write_file"] {
