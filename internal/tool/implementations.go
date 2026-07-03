@@ -249,20 +249,21 @@ func extractImportPaths(importBlock string) string {
 	var paths []string
 	for _, line := range strings.Split(importBlock, "\n") {
 		trimmed := strings.TrimSpace(line)
-		// Skip line numbers ("3 | import ("), package decls, parens, comments
-		if trimmed == "" || strings.HasPrefix(trimmed, "import") ||
-			trimmed == "(" || trimmed == ")" ||
+		if trimmed == "" {
+			continue
+		}
+		// Strip leading line number first: "4 | \"fmt\"" → "\"fmt\""
+		if idx := strings.Index(trimmed, "| "); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[idx+2:])
+		}
+		// Skip structural lines: import, (, ), comments, package decls
+		if trimmed == "" || trimmed == "(" || trimmed == ")" ||
+			strings.HasPrefix(trimmed, "import") ||
 			strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") ||
 			strings.HasPrefix(trimmed, "package ") {
 			continue
 		}
-		// Strip leading line number if present: "4 | \"fmt\"" → "\"fmt\""
-		if idx := strings.Index(trimmed, "| "); idx >= 0 {
-			trimmed = strings.TrimSpace(trimmed[idx+2:])
-		}
-		if trimmed != "" {
-			paths = append(paths, trimmed)
-		}
+		paths = append(paths, trimmed)
 	}
 	return strings.Join(paths, ", ")
 }
