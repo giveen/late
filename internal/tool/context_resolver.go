@@ -173,6 +173,12 @@ func (t *ContextResolverTool) Execute(ctx context.Context, args json.RawMessage)
 				}
 				dir = filepath.Dir(dir)
 			}
+			// Fallback: try non-Go project root markers (Gemfile, Cargo.toml, etc.)
+			if projectRoot == filepath.Dir(targetPath) {
+				if pr := detectProjectRoot(targetPath); pr != "" {
+					projectRoot = pr
+				}
+			}
 		}
 	}
 
@@ -189,13 +195,30 @@ func (t *ContextResolverTool) Execute(ctx context.Context, args json.RawMessage)
 	fset := token.NewFileSet()
 	af, parseErr := parser.ParseFile(fset, targetPath, nil, parser.ParseComments)
 	if parseErr != nil {
+		// Non-Go file — try gotreesitter for import/symbol extraction
 		result := ContextResult{
 			TargetFile:  relTarget,
 			Language:    lang,
-			Package:     extractPackageNameFromReader(targetPath),
 			ProjectRoot: projectRoot,
 			ElapsedMs:   time.Since(start).Milliseconds(),
 		}
+
+		// Try tree-sitter based extraction for non-Go files
+		if gs := extractWithGotreesitter(targetPath, projectRoot); gs != nil {
+			result.Language = gs.Language
+			result.Imports = gs.Imports
+			result.LocalSymbols = gs.LocalSymbols
+			result.Package = gs.Package
+
+			// Discover test files for this language
+			if tests := findTestFiles(projectRoot, gs.Language); len(tests) > 0 {
+				result.TestFiles = tests
+			}
+
+			// Discover sibling files (language-agnostic)
+			result.SiblingFiles = findSiblingFiles(projectRoot, targetPath)
+		}
+
 		return formatResult(result)
 	}
 
