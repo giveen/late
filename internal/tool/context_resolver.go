@@ -55,6 +55,7 @@ type ContextResult struct {
 	TestFiles     []TestFile      `json:"test_files,omitempty"`
 	SiblingFiles  []string        `json:"sibling_files,omitempty"`
 	ProjectRoot   string          `json:"project_root"`
+	Note          string          `json:"note,omitempty"`
 	ElapsedMs     int64           `json:"elapsed_ms"`
 }
 
@@ -202,9 +203,10 @@ func (t *ContextResolverTool) Execute(ctx context.Context, args json.RawMessage)
 			ProjectRoot: projectRoot,
 			ElapsedMs:   time.Since(start).Milliseconds(),
 		}
-
 		// Try tree-sitter based extraction for non-Go files
-		if gs := extractWithGotreesitter(targetPath, projectRoot); gs != nil {
+		// Wrapped in safeExtractWithGotreesitter to recover panics from
+		// the CGo-free tree-sitter library (e.g. nil grammar references)
+		if gs := safeExtractWithGotreesitter(targetPath, projectRoot); gs != nil {
 			result.Language = gs.Language
 			result.Imports = gs.Imports
 			result.LocalSymbols = gs.LocalSymbols
@@ -217,10 +219,13 @@ func (t *ContextResolverTool) Execute(ctx context.Context, args json.RawMessage)
 
 			// Discover sibling files (language-agnostic)
 			result.SiblingFiles = findSiblingFiles(projectRoot, targetPath)
+		} else if lang == "unknown" {
+			result.Note = "unsupported file type — context_resolver supports Go, Python, JavaScript, TypeScript, Ruby, Rust, Java, Kotlin, C#, Swift, C, C++"
+		} else if lang != "" {
+			result.Note = fmt.Sprintf("could not parse %s file — tree-sitter grammar unavailable or parse failed", lang)
 		}
-
 		return formatResult(result)
-	}
+}
 
 	result := ContextResult{
 		TargetFile:  relTarget,
@@ -310,7 +315,8 @@ func (t *ContextResolverTool) Execute(ctx context.Context, args json.RawMessage)
 	targetDir := filepath.Dir(relTarget)
 	for _, tf := range proj.testFiles {
 		relTf, _ := filepath.Rel(projectRoot, tf)
-		if strings.HasPrefix(relTf, targetDir) {
+		if strings.HasPrefix(relTf, targetDir) ||
+			(targetDir == "." && !strings.ContainsRune(relTf, filepath.Separator)) {
 			result.TestFiles = append(result.TestFiles, TestFile{
 				Path:       relTf,
 				Confidence: "direct",
@@ -321,7 +327,16 @@ func (t *ContextResolverTool) Execute(ctx context.Context, args json.RawMessage)
 		if imp.IsStdlib {
 			continue
 		}
-		impRel := strings.TrimPrefix(imp.Path, filepath.Base(projectRoot)+"/")
+		// Strip module prefix to get relative directory; handle root package
+		base := filepath.Base(projectRoot)
+		var impRel string
+		if strings.HasPrefix(imp.Path, base+"/") {
+			impRel = imp.Path[len(base)+1:]
+		} else if imp.Path == base {
+			impRel = ""
+		} else {
+			impRel = imp.Path
+		}
 		for _, tf := range proj.testFiles {
 			relTf, _ := filepath.Rel(projectRoot, tf)
 			if strings.HasPrefix(relTf, impRel) &&
@@ -356,6 +371,18 @@ func (t *ContextResolverTool) Execute(ctx context.Context, args json.RawMessage)
 
 	result.ElapsedMs = time.Since(start).Milliseconds()
 	return formatResult(result)
+}
+
+// safeExtractWithGotreesitter wraps extractWithGotreesitter with a panic
+// recovery so a crash in the tree-sitter CGo-free library doesn't take
+// down the whole tool. Returns nil on panic or parse failure.
+func safeExtractWithGotreesitter(targetPath, projectRoot string) (ctx *extractedContext) {
+	defer func() {
+		if r := recover(); r != nil {
+			ctx = nil
+		}
+	}()
+	return extractWithGotreesitter(targetPath, projectRoot)
 }
 
 // extractUsedSymbols walks the AST of a parsed file to find which symbols
@@ -485,7 +512,17 @@ func buildProjectIndex(projectDir string) *cachedProject {
 
 func findDefFiles(proj *cachedProject, importPath string, max int) []string {
 	var results []string
-	importRel := strings.TrimPrefix(importPath, filepath.Base(proj.projectDir)+"/")
+
+	// Strip module prefix to get relative directory; handle root package
+	base := filepath.Base(proj.projectDir)
+	var importRel string
+	if strings.HasPrefix(importPath, base+"/") {
+		importRel = importPath[len(base)+1:]
+	} else if importPath == base {
+		importRel = ""
+	} else {
+		importRel = importPath
+	}
 
 	for _, f := range proj.allGoFiles {
 		rel, _ := filepath.Rel(proj.projectDir, f)
@@ -602,8 +639,12 @@ func shouldSkipDir(name string) bool {
 
 func isStdLibImport(importPath, moduleName string, proj *cachedProject) bool {
 	// If it starts with the project module name, it's local, not stdlib
-	if moduleName != "" && strings.HasPrefix(importPath, moduleName) {
-		return false
+	// Must check trailing '/' or exact match to avoid prefix collisions
+	// (e.g. module "late" must not match import "late-tool/foo")
+	if moduleName != "" {
+		if importPath == moduleName || strings.HasPrefix(importPath, moduleName+"/") {
+			return false
+		}
 	}
 
 	// Check if any local file directory matches this import

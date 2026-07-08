@@ -54,13 +54,13 @@ const jsImportQuery = `
 ]
 `
 
-// jsDefQuery captures function, class, arrow-function definitions
+// jsDefQuery captures function, class, and method definitions (arrow functions
+// are anonymous in tree-sitter's JS grammar — they have no 'name' field)
 const jsDefQuery = `
 [
   (function_declaration name: (identifier) @name) @definition.function
   (class_declaration name: (identifier) @name) @definition.class
   (method_definition name: (property_identifier) @name) @definition.method
-  (arrow_function name: (identifier) @name) @definition.function
 ]
 `
 

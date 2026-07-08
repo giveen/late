@@ -35,7 +35,7 @@ func NewReadFileTool() *ReadFileTool {
 func (t *ReadFileTool) Name() string        { return "read_file" }
 func (t *ReadFileTool) Description() string {
 	return "Read the content of a file. With read_imports:true, returns only imports. " +
-		"When path is a directory with read_imports:true, returns imports from all .go files in it."
+		"When path is a directory with read_imports:true, returns imports from all .go, .py, .js, .ts, .jsx, .tsx files in it."
 }
 func (t *ReadFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -44,7 +44,7 @@ func (t *ReadFileTool) Parameters() json.RawMessage {
 			"path": { "type": "string", "description": "Path to the file to read" },
 			"start_line": { "type": "integer", "description": "Optional: Start reading from this line number (1-indexed)" },
 			"end_line": { "type": "integer", "description": "Optional: Stop reading at this line number (inclusive)" },
-			"read_imports": { "type": "boolean", "description": "Optional: If true, return only the Go import block (fast, no full file read). Ignores start_line/end_line." }
+			"read_imports": { "type": "boolean", "description": "Optional: If true, return only the import block (fast, no full file read). Supports .go, .py, .js, .ts, .jsx, .tsx. Ignores start_line/end_line." }
 		},
 		"required": ["path"]
 	}`)
@@ -138,16 +138,32 @@ func (t *ReadFileTool) CallString(args json.RawMessage) string {
 	return fmt.Sprintf("Reading file %s", truncate(path, 50))
 }
 
-// readImportBlock reads only the import block from a Go source file.
-// Returns "package X (no imports)" if there's no import block.
-// Designed for the read_imports=true mode of ReadFileTool.
+// readImportBlock extracts import statements from a source file.
+// Supports Go (.go), Python (.py), JavaScript/TypeScript (.js/.ts/.jsx/.tsx).
 func readImportBlock(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
+	content := string(data)
+	ext := filepath.Ext(path)
 
-	lines := strings.Split(string(data), "\n")
+	switch ext {
+	case ".go":
+		return readGoImportBlock(path, content)
+	case ".py":
+		return readPyImportBlock(content)
+	case ".js", ".ts", ".jsx", ".tsx":
+		return readJSImportBlock(content)
+	default:
+		return fmt.Sprintf("read_imports not supported for %s files", ext), nil
+	}
+}
+
+// readGoImportBlock extracts the import block from a Go source file using
+// the standard library's go/parser.
+func readGoImportBlock(path, content string) (string, error) {
+	lines := strings.Split(content, "\n")
 
 	// Find package declaration
 	pkg := ""
@@ -206,9 +222,61 @@ func readImportBlock(path string) (string, error) {
 	return sb.String(), nil
 }
 
-// readImportBlockForDir reads import blocks from all .go files in a directory
-// (non-recursive) and returns a compact summary. One call replaces N individual
-// read_file(read_imports:true) calls.
+// readPyImportBlock extracts Python import statements (import X / from X import Y).
+func readPyImportBlock(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	var imports []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip empty lines, comments, and string literals (simple heuristic)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "from ") {
+			imports = append(imports, trimmed)
+		}
+	}
+	if len(imports) == 0 {
+		return "(no imports)", nil
+	}
+	return strings.Join(imports, "\n"), nil
+}
+
+// readJSImportBlock extracts JavaScript/TypeScript import statements
+// (ES module imports and require calls).
+func readJSImportBlock(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	var imports []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		// ES module imports: import { X } from "y"
+		if strings.HasPrefix(trimmed, "import ") {
+			imports = append(imports, trimmed)
+			continue
+		}
+		// require calls: const x = require("y"), let x = require("y"), var x = require("y")
+		// Also dynamic require inline
+		if strings.Contains(trimmed, "require(") {
+			imports = append(imports, trimmed)
+		}
+	}
+	if len(imports) == 0 {
+		return "(no imports)", nil
+	}
+	return strings.Join(imports, "\n"), nil
+}
+
+// supportedImportExts lists file extensions that readImportBlock can handle.
+var supportedImportExts = map[string]bool{
+	".go": true, ".py": true, ".js": true, ".ts": true, ".jsx": true, ".tsx": true,
+}
+
+// readImportBlockForDir reads import blocks from all supported source files in a
+// directory (non-recursive) and returns a compact summary. One call replaces N
+// individual read_file(read_imports:true) calls.
 func readImportBlockForDir(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -217,7 +285,8 @@ func readImportBlockForDir(dir string) (string, error) {
 
 	var sb strings.Builder
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+		ext := filepath.Ext(entry.Name())
+		if entry.IsDir() || !supportedImportExts[ext] {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -227,10 +296,9 @@ func readImportBlockForDir(dir string) (string, error) {
 			continue
 		}
 		// Compact format: just the important bits
-		if strings.Contains(imports, "(no imports)") {
+		if strings.Contains(imports, "(no imports)") || strings.HasPrefix(imports, "read_imports not supported") {
 			sb.WriteString(fmt.Sprintf("%s: (no imports)\n", entry.Name()))
 		} else {
-			// Extract just the package+import paths without line numbers
 			paths := extractImportPaths(imports)
 			sb.WriteString(fmt.Sprintf("%s: %s\n", entry.Name(), paths))
 		}
@@ -238,13 +306,15 @@ func readImportBlockForDir(dir string) (string, error) {
 
 	result := sb.String()
 	if result == "" {
-		return "(no .go files found)", nil
+		return "(no supported source files found)", nil
 	}
 	return result, nil
 }
 
 // extractImportPaths parses a readImportBlock result and returns a compact
-// comma-separated list of import paths, e.g. "\"fmt\", \"strings\", \"mvdan.cc/sh/v3/syntax\""
+// comma-separated list of import paths. For Go (lines with "N | " prefix),
+// it strips line numbers and structural keywords. For Python/JS (no prefix),
+// it keeps each import line as-is.
 func extractImportPaths(importBlock string) string {
 	var paths []string
 	for _, line := range strings.Split(importBlock, "\n") {
@@ -253,16 +323,21 @@ func extractImportPaths(importBlock string) string {
 			continue
 		}
 		// Strip leading line number first: "4 | \"fmt\"" → "\"fmt\""
+		hasLineNum := false
 		if idx := strings.Index(trimmed, "| "); idx >= 0 {
 			trimmed = strings.TrimSpace(trimmed[idx+2:])
+			hasLineNum = true
 		}
-		// Skip structural lines: import, (, ), comments, package decls
-		if trimmed == "" || trimmed == "(" || trimmed == ")" ||
-			strings.HasPrefix(trimmed, "import") ||
-			strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") ||
-			strings.HasPrefix(trimmed, "package ") {
-			continue
+		if hasLineNum {
+			// Go format: skip structural lines: import, (, ), comments, package decls
+			if trimmed == "" || trimmed == "(" || trimmed == ")" ||
+				strings.HasPrefix(trimmed, "import") ||
+				strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") ||
+				strings.HasPrefix(trimmed, "package ") {
+				continue
+			}
 		}
+		// Python/JS: keep the whole import line (no stripping needed)
 		paths = append(paths, trimmed)
 	}
 	return strings.Join(paths, ", ")
