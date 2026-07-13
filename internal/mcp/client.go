@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,16 +17,32 @@ import (
 
 // Client manages MCP connections and tools.
 type Client struct {
-	sessions map[string]*mcp.ClientSession
-	tools    map[string]*ToolAdapter
+	sessions  map[string]*mcp.ClientSession
+	tools     map[string]*ToolAdapter
+	sdkClient *mcp.Client // single SDK client instance managing all sessions
 }
 
-// NewClient creates a new MCP client.
+// NewClient creates a new MCP client with a single underlying SDK client
+// instance managing all sessions. The ToolListChangedHandler is wired to
+// re-discover tools when a server's tool list changes dynamically.
 func NewClient() *Client {
-	return &Client{
+	c := &Client{
 		sessions: make(map[string]*mcp.ClientSession),
 		tools:    make(map[string]*ToolAdapter),
 	}
+	c.sdkClient = mcp.NewClient(
+		&mcp.Implementation{
+			Name:    "late",
+			Version: common.Version,
+		},
+		&mcp.ClientOptions{
+			Capabilities: &mcp.ClientCapabilities{}, // suppress the SDK default "roots" capability
+			ToolListChangedHandler: func(ctx context.Context, req *mcp.ToolListChangedRequest) {
+				c.handleToolListChanged(ctx, req)
+			},
+		},
+	)
+	return c
 }
 
 // ToolAdapter adapts MCP tools to the Tool interface.
@@ -81,10 +98,19 @@ func (t *ToolAdapter) Execute(ctx context.Context, args json.RawMessage) (string
 	// Convert result to string
 	var sb strings.Builder
 	for _, content := range result.Content {
-		if text, ok := content.(*mcp.TextContent); ok {
-			sb.WriteString(text.Text)
-		} else if image, ok := content.(*mcp.ImageContent); ok {
-			sb.WriteString(fmt.Sprintf("[Image: %s]", image.MIMEType))
+		switch c := content.(type) {
+		case *mcp.TextContent:
+			sb.WriteString(c.Text)
+		case *mcp.ImageContent:
+			sb.WriteString(fmt.Sprintf("[Image: %s]", c.MIMEType))
+		case *mcp.AudioContent:
+			sb.WriteString(fmt.Sprintf("[Audio: %s]", c.MIMEType))
+		case *mcp.ResourceLink:
+			sb.WriteString(fmt.Sprintf("[Resource: %s]", c.URI))
+		case *mcp.EmbeddedResource:
+			sb.WriteString("[Embedded resource]")
+		default:
+			fmt.Fprintf(os.Stderr, "MCP tool returned unhandled content type: %T\n", content)
 		}
 	}
 
@@ -112,17 +138,12 @@ func (t *ToolAdapter) CallString(args json.RawMessage) string {
 	return fmt.Sprintf("Calling MCP tool '%s'...", t.Name())
 }
 
-// Connect establishes a connection to an MCP server.
+// Connect establishes a connection to an MCP server using the shared SDK client.
 // serverName is stored on each ToolAdapter so that tool names are namespaced
 // as "{server}:{tool}" in allowed_tools.json, preventing collisions between
 // servers that expose tools with the same bare name.
 func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverName string) error {
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "late",
-		Version: common.Version,
-	}, nil)
-
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := c.sdkClient.Connect(ctx, transport, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
@@ -144,6 +165,46 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverNam
 	}
 
 	return nil
+}
+// handleToolListChanged re-discovers tools for a server when the SDK notifies
+// us of a tools/list change. It removes stale tool adapters for that server
+// and re-enumerates via the session's paginating Tools iterator.
+func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListChangedRequest) {
+	sess := req.Session
+
+	// Map the SDK session back to the server name we assigned in Connect.
+	var serverName string
+	for name, s := range c.sessions {
+		if s == sess {
+			serverName = name
+			break
+		}
+	}
+	if serverName == "" {
+		fmt.Fprintf(os.Stderr, "MCP tool list changed notification for unknown session\n")
+		return
+	}
+
+	fmt.Printf("MCP server '%s' tools changed, re-discovering...\n", serverName)
+
+	// Remove stale tool adapters for this server.
+	for name, t := range c.tools {
+		if t.serverName == serverName {
+			delete(c.tools, name)
+		}
+	}
+
+	// Re-discover and register the new tool set.
+	for tool := range sess.Tools(ctx, &mcp.ListToolsParams{}) {
+		if tool != nil {
+			adapter := &ToolAdapter{
+				mcpTool:    tool,
+				session:    sess,
+				serverName: serverName,
+			}
+			c.tools[adapter.Name()] = adapter
+		}
+	}
 }
 
 // GetTools returns all MCP tools as Tool interface instances.
@@ -174,45 +235,84 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// NewStdioTransport creates a new transport that communicates with a subprocess.
+// NewStdioTransport creates a new transport that communicates with a subprocess
+// using the SDK's CommandTransport for proper process lifecycle (SIGTERM → wait → SIGKILL).
+// Stderr is discarded to prevent MCP server output from bleeding into the TUI.
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (mcp.Transport, error) {
+	return NewStdioTransportWithStderr(ctx, command, args, env, io.Discard)
+}
+
+// NewStdioTransportWithStderr is like NewStdioTransport but writes the subprocess's
+// stderr to the provided writer instead of discarding it. This is used by
+// ConnectFromConfig to buffer stderr for diagnostics on connection failure.
+func NewStdioTransportWithStderr(ctx context.Context, command string, args []string, env []string, stderr io.Writer) (mcp.Transport, error) {
 	cmd := exec.Command(command, args...)
 	cmd.Env = append(os.Environ(), env...)
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
+	serr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
+	go func() {
+		io.Copy(stderr, serr)
+	}()
 
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start command: %w", err)
+	return &mcp.CommandTransport{
+		Command: cmd,
+	}, nil
+}
+
+// TransportForServer creates the appropriate mcp.Transport for a server config.
+// Supported transport types:
+//   - "stdio" (default when command is set) — local subprocess via CommandTransport
+//   - "sse"   (default when url is set)   — remote SSE endpoint via SSEClientTransport
+//   - "streamable-http"                   — remote streamable HTTP endpoint
+//
+// The server config should have already had environment variables expanded.
+func TransportForServer(ctx context.Context, server *MCPServer) (mcp.Transport, error) {
+	switch server.TransportType {
+	case "sse":
+		if server.URL == "" {
+			return nil, fmt.Errorf("sse transport requires 'url'")
+		}
+		return &mcp.SSEClientTransport{
+			Endpoint: server.URL,
+		}, nil
+	case "streamable-http":
+		if server.URL == "" {
+			return nil, fmt.Errorf("streamable-http transport requires 'url'")
+		}
+		return &mcp.StreamableClientTransport{
+			Endpoint: server.URL,
+		}, nil
+	case "stdio":
+		// handled below
+	case "":
+		// Infer from available fields: URL → remote, Command → stdio
+		if server.URL != "" {
+			return &mcp.SSEClientTransport{
+				Endpoint: server.URL,
+			}, nil
+		}
+	default:
+		return nil, fmt.Errorf("unknown transport type: %q", server.TransportType)
 	}
 
-	// Discard stderr to prevent output from bleeding into TUI
-	go func() {
-		io.Copy(io.Discard, stderr)
-	}()
+	// Stdio subprocess transport (explicit or default)
+	if server.Command == "" {
+		return nil, fmt.Errorf("server config must specify 'command' for stdio transport or 'url' for remote transport")
+	}
 
-	// Kill the subprocess when the context is cancelled.
-	go func() {
-		<-ctx.Done()
-		cmd.Process.Kill()
-	}()
+	envSlice := make([]string, 0, len(server.Env))
+	for k, v := range server.Env {
+		envSlice = append(envSlice, k+"="+v)
+	}
 
-	return &mcp.IOTransport{
-		Reader: stdout,
-		Writer: stdin,
-	}, nil
+	t, err := NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, io.Discard)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error {
@@ -225,23 +325,36 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 		// Expand environment variables in server configuration
 		ExpandServerEnvVars(&server)
 
-		// Convert server.Env map to KEY=VALUE slice for the subprocess
-		envSlice := make([]string, 0, len(server.Env))
-		for k, v := range server.Env {
-			envSlice = append(envSlice, k+"="+v)
-		}
+		var transport mcp.Transport
+		var err error
 
-		// Create transport for this server
-		transport, err := NewStdioTransport(ctx, server.Command, server.Args, envSlice)
-		if err != nil {
-			return fmt.Errorf("failed to create transport for server %s: %w", name, err)
-		}
+		// For stdio transports, buffer stderr so we can include diagnostics if
+		// the connection fails. Remote transports don't have stderr.
+		if server.TransportType == "stdio" || (server.TransportType == "" && server.Command != "" && server.URL == "") {
+			envSlice := make([]string, 0, len(server.Env))
+			for k, v := range server.Env {
+				envSlice = append(envSlice, k+"="+v)
+			}
+			var stderrBuf bytes.Buffer
+			transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf)
+			if err == nil {
+				err = c.Connect(ctx, transport, name)
+			}
+			if err != nil {
+				if stderrBuf.Len() > 0 {
+					return fmt.Errorf("failed to connect to server %s: %w\nstderr:\n%s", name, err, stderrBuf.String())
+				}
+				return fmt.Errorf("failed to connect to server %s: %w", name, err)
+			}
+		} else {
+			transport, err = TransportForServer(ctx, &server)
+			if err != nil {
+				return fmt.Errorf("failed to create transport for server %s: %w", name, err)
+			}
 
-		// Connect to the server, passing the server name so tools are registered
-		// with namespaced names ("{server}:{tool}") in the tool registry and
-		// allowed_tools.json.
-		if err := c.Connect(ctx, transport, name); err != nil {
-			return fmt.Errorf("failed to connect to server %s: %w", name, err)
+			if err := c.Connect(ctx, transport, name); err != nil {
+				return fmt.Errorf("failed to connect to server %s: %w", name, err)
+			}
 		}
 	}
 
