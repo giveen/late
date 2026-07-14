@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"late/internal/common"
@@ -17,6 +19,7 @@ import (
 
 // Client manages MCP connections and tools.
 type Client struct {
+	mu        sync.RWMutex
 	sessions  map[string]*mcp.ClientSession
 	tools     map[string]*ToolAdapter
 	sdkClient *mcp.Client // single SDK client instance managing all sessions
@@ -148,21 +151,27 @@ func (c *Client) Connect(ctx context.Context, transport mcp.Transport, serverNam
 		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
-	// Store session keyed by server name so Close() shuts down every
-	// subprocess, not just the last one connected.
-	c.sessions[serverName] = session
-
-	// List and store tools using iterator
+	// Collect adapters without holding the lock; the SDK's Tools iterator may
+	// perform RPCs, and we want to avoid blocking readers.
+	var adapters []*ToolAdapter
 	for tool := range session.Tools(ctx, &mcp.ListToolsParams{}) {
 		if tool != nil {
-			adapter := &ToolAdapter{
+			adapters = append(adapters, &ToolAdapter{
 				mcpTool:    tool,
 				session:    session,
 				serverName: serverName,
-			}
-			c.tools[adapter.Name()] = adapter
+			})
 		}
 	}
+
+	// Store session keyed by server name so Close() shuts down every
+	// subprocess, not just the last one connected.
+	c.mu.Lock()
+	c.sessions[serverName] = session
+	for _, adapter := range adapters {
+		c.tools[adapter.Name()] = adapter
+	}
+	c.mu.Unlock()
 
 	return nil
 }
@@ -173,6 +182,7 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 	sess := req.Session
 
 	// Map the SDK session back to the server name we assigned in Connect.
+	c.mu.RLock()
 	var serverName string
 	for name, s := range c.sessions {
 		if s == sess {
@@ -180,6 +190,7 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 			break
 		}
 	}
+	c.mu.RUnlock()
 	if serverName == "" {
 		fmt.Fprintf(os.Stderr, "MCP tool list changed notification for unknown session\n")
 		return
@@ -187,28 +198,36 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 
 	fmt.Printf("MCP server '%s' tools changed, re-discovering...\n", serverName)
 
-	// Remove stale tool adapters for this server.
+	// Collect the new tool set without holding the lock; the SDK's Tools
+	// iterator may perform RPCs.
+	var adapters []*ToolAdapter
+	for tool := range sess.Tools(ctx, &mcp.ListToolsParams{}) {
+		if tool != nil {
+			adapters = append(adapters, &ToolAdapter{
+				mcpTool:    tool,
+				session:    sess,
+				serverName: serverName,
+			})
+		}
+	}
+
+	// Remove stale tool adapters for this server and register the new set.
+	c.mu.Lock()
 	for name, t := range c.tools {
 		if t.serverName == serverName {
 			delete(c.tools, name)
 		}
 	}
-
-	// Re-discover and register the new tool set.
-	for tool := range sess.Tools(ctx, &mcp.ListToolsParams{}) {
-		if tool != nil {
-			adapter := &ToolAdapter{
-				mcpTool:    tool,
-				session:    sess,
-				serverName: serverName,
-			}
-			c.tools[adapter.Name()] = adapter
-		}
+	for _, adapter := range adapters {
+		c.tools[adapter.Name()] = adapter
 	}
+	c.mu.Unlock()
 }
 
 // GetTools returns all MCP tools as Tool interface instances.
 func (c *Client) GetTools() []tool.Tool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	tools := make([]tool.Tool, 0, len(c.tools))
 	for _, t := range c.tools {
 		tools = append(tools, t)
@@ -218,6 +237,8 @@ func (c *Client) GetTools() []tool.Tool {
 
 // GetTool returns a specific MCP tool by name.
 func (c *Client) GetTool(name string) tool.Tool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	t, ok := c.tools[name]
 	if !ok {
 		return nil
@@ -227,12 +248,46 @@ func (c *Client) GetTool(name string) tool.Tool {
 
 // Close closes all MCP connections.
 func (c *Client) Close() error {
+	c.mu.RLock()
+	sessions := make([]*mcp.ClientSession, 0, len(c.sessions))
+	names := make([]string, 0, len(c.sessions))
 	for name, session := range c.sessions {
+		names = append(names, name)
+		sessions = append(sessions, session)
+	}
+	c.mu.RUnlock()
+
+	for i, session := range sessions {
 		if err := session.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error closing MCP session '%s': %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "Error closing MCP session '%s': %v\n", names[i], err)
 		}
 	}
 	return nil
+}
+
+// lockedBuffer wraps a bytes.Buffer with a mutex so it can be safely written
+// by a background goroutine and read by another goroutine on connection failure.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // NewStdioTransport creates a new transport that communicates with a subprocess
@@ -335,12 +390,14 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 			for k, v := range server.Env {
 				envSlice = append(envSlice, k+"="+v)
 			}
-			var stderrBuf bytes.Buffer
+			var stderrBuf lockedBuffer
 			transport, err = NewStdioTransportWithStderr(ctx, server.Command, server.Args, envSlice, &stderrBuf)
 			if err == nil {
 				err = c.Connect(ctx, transport, name)
 			}
 			if err != nil {
+				// Give the stderr goroutine a moment to capture the error.
+				time.Sleep(50 * time.Millisecond)
 				if stderrBuf.Len() > 0 {
 					return fmt.Errorf("failed to connect to server %s: %w\nstderr:\n%s", name, err, stderrBuf.String())
 				}
