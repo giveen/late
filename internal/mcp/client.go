@@ -113,7 +113,7 @@ func (t *ToolAdapter) Execute(ctx context.Context, args json.RawMessage) (string
 		case *mcp.EmbeddedResource:
 			sb.WriteString("[Embedded resource]")
 		default:
-			fmt.Fprintf(os.Stderr, "MCP tool returned unhandled content type: %T\n", content)
+			// fmt.Fprintf(os.Stderr, "MCP tool returned unhandled content type: %T\n", content)
 		}
 	}
 
@@ -192,11 +192,11 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 	}
 	c.mu.RUnlock()
 	if serverName == "" {
-		fmt.Fprintf(os.Stderr, "MCP tool list changed notification for unknown session\n")
+		// fmt.Fprintf(os.Stderr, "MCP tool list changed notification for unknown session\n")
 		return
 	}
 
-	fmt.Printf("MCP server '%s' tools changed, re-discovering...\n", serverName)
+	// fmt.Printf("MCP server '%s' tools changed, re-discovering...\n", serverName)
 
 	// Collect the new tool set without holding the lock; the SDK's Tools
 	// iterator may perform RPCs.
@@ -250,16 +250,14 @@ func (c *Client) GetTool(name string) tool.Tool {
 func (c *Client) Close() error {
 	c.mu.RLock()
 	sessions := make([]*mcp.ClientSession, 0, len(c.sessions))
-	names := make([]string, 0, len(c.sessions))
-	for name, session := range c.sessions {
-		names = append(names, name)
+	for _, session := range c.sessions {
 		sessions = append(sessions, session)
 	}
 	c.mu.RUnlock()
 
-	for i, session := range sessions {
+	for _, session := range sessions {
 		if err := session.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error closing MCP session '%s': %v\n", names[i], err)
+			// TODO: log session close error when global logger exists
 		}
 	}
 	return nil
@@ -275,7 +273,16 @@ type lockedBuffer struct {
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	const maxSize = 8192
+	if b.buf.Len() < maxSize {
+		writeLen := len(p)
+		if b.buf.Len()+writeLen > maxSize {
+			writeLen = maxSize - b.buf.Len()
+		}
+		b.buf.Write(p[:writeLen])
+	}
+	// returning len(p) so the pipe keeps draining
+	return len(p), nil
 }
 
 func (b *lockedBuffer) Len() int {
@@ -373,7 +380,7 @@ func TransportForServer(ctx context.Context, server *MCPServer) (mcp.Transport, 
 func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error {
 	for name, server := range config.McpServers {
 		if server.Disabled {
-			fmt.Printf("Skipping disabled MCP server: %s\n", name)
+			// fmt.Printf("Skipping disabled MCP server: %s\n", name)
 			continue
 		}
 

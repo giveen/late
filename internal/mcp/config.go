@@ -48,7 +48,7 @@ func LoadMCPConfig() (*MCPConfig, error) {
 
 		if err := os.MkdirAll(lateConfigDir, 0700); err == nil {
 			if err := os.WriteFile(defaultUserPath, defaultData, 0600); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Could not write default MCP config to %s: %v\n", defaultUserPath, err)
+				// fmt.Fprintf(os.Stderr, "Warning: Could not write default MCP config to %s: %v\n", defaultUserPath, err)
 			}
 		}
 
