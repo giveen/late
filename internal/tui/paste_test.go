@@ -62,17 +62,23 @@ func TestPastePlaceholderReplacement(t *testing.T) {
 	res, _ := model.Update(msg)
 	model = res.(Model)
 
-	// Verify placeholder is inserted
-	expectedPlaceholder := "[Pasted #5 lines]"
+	// Verify placeholder is inserted (token is unique: [Pasted #5 lines <id>])
 	inputVal := model.Input.Value()
-	if !strings.Contains(inputVal, expectedPlaceholder) {
-		t.Errorf("Expected input to contain %q, got %q", expectedPlaceholder, inputVal)
+	if !strings.Contains(inputVal, "[Pasted #5 lines") {
+		t.Errorf("Expected input to contain a [Pasted #5 lines placeholder, got %q", inputVal)
 	}
-
-	// Verify paste text is stored in mapping
-	original, exists := model.Pastes[expectedPlaceholder]
-	if !exists || original != pasteText {
-		t.Errorf("Expected mapping from %q to %q, exists: %t, got %q", expectedPlaceholder, pasteText, exists, original)
+	if len(model.Pastes) != 1 {
+		t.Fatalf("Expected exactly 1 paste mapping, got %d", len(model.Pastes))
+	}
+	var placeholder, original string
+	for k, v := range model.Pastes {
+		placeholder, original = k, v
+	}
+	if original != pasteText {
+		t.Errorf("Expected mapping value %q, got %q", pasteText, original)
+	}
+	if !strings.Contains(inputVal, placeholder) {
+		t.Errorf("Expected input %q to contain generated placeholder %q", inputVal, placeholder)
 	}
 
 	// Simulate pressing enter/submitting
@@ -112,6 +118,37 @@ func TestPasteBinaryIgnored(t *testing.T) {
 	}
 	if strings.Contains(model.Input.Value(), "line1") || strings.Contains(model.Input.Value(), "line2") {
 		t.Errorf("Expected binary paste to be ignored, but input contains pasted content: %q", model.Input.Value())
+	}
+}
+
+func TestPastePlaceholderSubmitNoCollision(t *testing.T) {
+	orch := &mockOrchestrator{}
+	model := NewModel(orch, nil)
+
+	// Two multi-line pastes. The second paste's CONTENT contains a string
+	// that looks exactly like a placeholder; it must survive submission
+	// verbatim and never be expanded into the first paste's content.
+	first := "alpha\nbeta\ngamma\ndelta\nepsilon"
+	second := "one\ntwo\nthree\nfour\nfive [Pasted #5 lines 000000] end"
+
+	for _, p := range []string{first, second} {
+		res, _ := model.Update(tea.PasteMsg{Content: p})
+		model = res.(Model)
+	}
+
+	if len(model.Pastes) != 2 {
+		t.Fatalf("Expected 2 paste mappings, got %d", len(model.Pastes))
+	}
+
+	res, _ := model.Update(mockKey{code: '\r', text: "enter"})
+	model = res.(Model)
+
+	want := first + second
+	if orch.submittedText != want {
+		t.Errorf("Paste collision on submit.\n got %q\nwant %q", orch.submittedText, want)
+	}
+	if len(model.Pastes) != 0 {
+		t.Errorf("Expected pastes cleared after submit, got %d", len(model.Pastes))
 	}
 }
 
