@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
@@ -1120,18 +1121,62 @@ func (m Model) interruptFocusedAgent() (Model, tea.Cmd) {
 	return m, nil
 }
 
+// isBinary reports whether the given bytes look like binary rather than
+// text that should be injected into the chat input.
+//
+// A paste is treated as binary when any of the following hold:
+//   - it contains a NUL byte (definitive binary signal),
+//   - it is not valid UTF-8 (images, gzip blobs, encodings, etc.),
+//   - more than ~10% of its (non-multibyte) bytes are raw control
+//     characters other than benign whitespace.
+//
+// The whole slice is validated for UTF-8 (cheap, allocation-free) so a
+// truncated multibyte sequence at the 8 KiB sampling boundary cannot
+// produce a false positive. Control-char scanning is bounded to the
+// first 8 KiB for performance on very large pastes.
 func isBinary(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
+
+	// Valid UTF-8 text is never binary, regardless of length.
+	if !utf8.Valid(data) {
+		return true
+	}
+
 	limit := len(data)
 	if limit > 8192 {
 		limit = 8192
 	}
+
+	// NUL byte is a definitive binary signal.
 	for i := 0; i < limit; i++ {
 		if data[i] == 0 {
 			return true
 		}
 	}
+
+	// Count raw control bytes (excluding benign whitespace) to catch binary
+	// blobs that happen to be valid UTF-8. Only ASCII-range bytes can be raw
+	// control characters; multibyte UTF-8 bytes (>= 0x80) are left alone.
+	control := 0
+	for i := 0; i < limit; i++ {
+		b := data[i]
+		if b >= 0x80 {
+			continue
+		}
+		switch b {
+		case '\t', '\n', '\r', '\v', '\f', ' ':
+			// Benign whitespace — not a binary signal.
+		default:
+			if b < 0x20 || b == 0x7f {
+				control++
+			}
+		}
+	}
+	if float64(control)/float64(limit) > 0.10 {
+		return true
+	}
+
 	return false
 }

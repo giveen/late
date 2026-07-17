@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"late/internal/client"
 	"late/internal/common"
@@ -111,6 +112,36 @@ func TestPasteBinaryIgnored(t *testing.T) {
 	}
 	if strings.Contains(model.Input.Value(), "line1") || strings.Contains(model.Input.Value(), "line2") {
 		t.Errorf("Expected binary paste to be ignored, but input contains pasted content: %q", model.Input.Value())
+	}
+}
+
+func TestIsBinary(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"empty", []byte(""), false},
+		{"plain text", []byte("hello\nworld"), false},
+		// Existing NUL-byte behavior must still hold.
+		{"nul byte", []byte("line1\nline2\x00\nline3"), true},
+		// Invalid UTF-8 (e.g. a pasted image/gzip blob) is now rejected.
+		{"invalid utf8", []byte{0xff, 0xfe, 0x41, 0x42}, true},
+		// Valid multibyte UTF-8 must NOT be treated as binary.
+		{"utf8 multibyte", []byte("héllo 世界\n"), false},
+		// Base64 of binary is valid ASCII text and should pass through.
+		{"base64 ascii", []byte("aGVsbG8gd29ybGQgdGhpcyBpcyBvbmx5IHRleHQ="), false},
+		// Control-heavy content (>>10% raw control bytes) is binary.
+		{"control heavy", append(bytes.Repeat([]byte("\x01\x02"), 60), []byte("ab")...), true},
+		// Mostly-text with a few incidental control bytes stays text.
+		{"sparse control", append([]byte("normal text here\x01\x02"), bytes.Repeat([]byte("x"), 200)...), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isBinary(tt.data); got != tt.want {
+				t.Errorf("isBinary(%q) = %v, want %v", tt.data, got, tt.want)
+			}
+		})
 	}
 }
 
