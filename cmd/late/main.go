@@ -349,6 +349,34 @@ func main() {
 		sess.Registry.Register(t)
 	}
 
+	// Register inline plugin tools (declared in the manifest's `late.tools`
+	// field). Each inline tool is run as a local script via runHook and
+	// hooks into the same ToolMiddleware chain as MCP-backed tools so
+	// onToolCall hooks, confirmations, and tool-result reporting all work
+	// uniformly for plugin-declared tools.
+	if pluginManager != nil {
+		for _, t := range pluginManager.GetInlineTools() {
+			// Apply enabledTools both by namespaced name and by bare name.
+			enabled := true
+			if v, ok := enabledTools[t.Name]; ok {
+				enabled = v
+			} else if idx := strings.LastIndex(t.Name, ":"); idx >= 0 {
+				if v, ok := enabledTools[t.Name[idx+1:]]; ok {
+					enabled = v
+				}
+			}
+			if !enabled {
+				continue
+			}
+			sess.Registry.Register(tool.ScriptTool{
+				ToolName:    t.Name,
+				Description: t.Description,
+				Parameters:  string(t.Parameters),
+				Runner:      t.Runner,
+			})
+		}
+	}
+
 	// Resolve theme: --theme flag > $LATE_THEME > bundled base.
 	themeID := *themeReq
 	if themeID == "" {
@@ -381,10 +409,13 @@ func main() {
 	model.ModelName = resolvedOpenAIConfig.Model
 	model.ShowCWD = *showCWDReq
 
-	// Register plugin slash commands + message hook + theme catalog into the TUI.
+	// Register plugin slash commands + message hook + theme catalog + command
+	// handler into the TUI so plugin commands actually fire when the user
+	// presses Enter.
 	if pluginManager != nil && pluginManager.Count() > 0 {
 		model.SetPluginCommands(pluginManager.PluginCommands())
 		model.MessageHook = pluginManager.HookedMessage
+		model.CommandHandler = pluginManager.HandleCommand
 		model.SelectedTheme = themeID
 
 		// Map plugin.ThemeInfo to tui.ThemeEntry so the /themes picker and

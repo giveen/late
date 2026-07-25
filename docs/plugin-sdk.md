@@ -489,3 +489,159 @@ Add more commands, skills, or MCP servers:
 ---
 
 > **Tip:** Plugins are discovered at startup and watched for changes every 2 seconds. You can enable/disable plugins with `late plugin enable <name>` and `late plugin disable <name>` without restarting Late.
+
+---
+
+## Plugin Surfaces (Reference)
+
+A plugin manifest's `late` field can declare any of the following surfaces.
+All surfaces are optional and may be combined in any package.json.
+
+### `late.commands` — slash commands
+
+`late.commands` accepts either a flat array of strings (legacy form, the
+command falls through to plain-prompt dispatch) or an array of objects that
+can attach a `handler` script (messages are dispatched to your script, stdout
+becomes a toast, errors become error toasts).
+
+```json
+{
+  "late": {
+    "commands": [
+      "/weather",
+      { "name": "/git-pull", "handler": "scripts/pull.sh" }
+    ]
+  }
+}
+```
+
+When the handler returns non-empty stdout, the TUI shows a toast like:
+`/git-pull → "Already up to date."`. When it exits non-zero, the toast
+reads: `/git-pull failed: <message>`.
+
+### `late.tools` — inline agent-callable tools
+
+Tools declared this way are exposed to the model without an MCP wrapper.
+The script receives the tool's argument JSON on stdin and must return the
+result on stdout.
+
+```json
+{
+  "late": {
+    "tools": [
+      {
+        "name": "summarize",
+        "description": "Summarize a file the user references.",
+        "script": "scripts/summarize.sh",
+        "parameters": {
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"]
+        }
+      }
+    ]
+  }
+}
+```
+
+The tool is registered under the namespaced name `<plugin>:<tool>` (e.g.
+`weather:summarize`). All the usual onToolCall / middleware pipeline rules
+apply, so plugin tools respect user confirmation, hook mutation, and
+enabledTools gating.
+
+### `late.hooks` — lifecycle hooks
+
+| Hook            | Trigger                                                       | Input (stdin)                                          |
+| --------------- | ------------------------------------------------------------- | ------------------------------------------------------ |
+| `onSessionStart` | Once, when Late starts.                                      | empty                                                   |
+| `onTurnStart`    | Before each response cycle begins.                           | empty                                                   |
+| `onTurnEnd`      | After each response cycle ends.                              | empty                                                   |
+| `onToolCall`     | Before every tool runs. May mutate or veto (return `"blocked"`). | `{ "tool": "...", "arguments": {...}, "timestamp": "..." }` |
+| `onToolResult`   | After every tool runs. Observation only by default; can **mutate** the result before the LLM sees it (see [Tool-result mutation](#tool-result-mutation) below). | `{ "tool": "...", "result": "..." }`                    |
+| `onMessageSend`  | Sequential transform of outgoing user messages.              | the current message text                                 |
+| `onInput`        | Sequential transform of the user's intended message.         | the current message text                                 |
+
+Hooks are run inside the plugin's directory, so relative paths in the
+manifest are resolved against the package root. Paths that escape the
+plugin directory are rejected.
+
+### `--project` — project-local plugins
+
+Install into `~/.config/late/.late/plugins/` (your project's local copy)
+instead of the global plugins directory:
+
+```bash
+late plugin install --project ./my-plugin
+late plugin link    --project ./my-plugin
+```
+
+Project-local plugins override global plugins with the same `name`, so
+teams can ship a plugin with their repo without forcing every developer
+to install it. Path: `$CWD/.late/plugins/`.
+
+### From the marketplace registry
+
+```bash
+# Bare name (no @, no /, no `.git`, no path prefix) → marketplace lookup.
+late plugin install git-helper
+# `github:user/repo` shorthand is also accepted.
+late plugin install github:my-org/git-helper
+```
+
+Bare names hit the marketplace first (`LATE_PLUGIN_REGISTRY` overrides
+`https://registry.late.dev/v1`). The registry returns either an npm target
+or a git URL. If the registry is unreachable or returns 404, install
+falls back to trying the bare name as an npm package. Override the
+registry from the environment when self-hosting:
+
+```bash
+export LATE_PLUGIN_REGISTRY="https://registry.example.com/v1"
+```
+
+## Updating Plugins
+
+```bash
+# Re-fetch every installed npm/git plugin in place; skips local devlinks.
+late plugin update
+
+# Update one plugin by name. Marketplace-source plugins re-resolve first.
+late plugin update git-helper
+```
+
+Update flow:
+
+- **npm** — `npm install --prefix <plugins-dir> --no-save --quiet <pkg>@latest`
+  then recreates the `plugins/<name>` symlink if it was missing.
+- **git** — clones to a sibling temp directory, strips `.git`, then atomically
+  `rename`s over the existing plugin directory (no half-writes).
+- **marketplace** — re-resolves the registry entry, then proceeds as npm or git.
+- **local** — skipped with a hint to edit the source directory directly.
+
+## Tool-result Mutation
+
+`onToolResult` scripts can rewrite the tool result before the LLM sees it.
+The hook runs sequentially across plugin scripts (deterministic order
+matches the snapshot from `PluginChangeMsg`). A script's stdout is
+interpreted like this:
+
+| Script stdout           | Effect                                                          |
+| ----------------------- | --------------------------------------------------------------- |
+| empty / non-JSON        | Result passes through to the next script / LLM unchanged.        |
+| valid JSON              | Replaces the result bytes for the next script / LLM.            |
+| literal `blocked`       | Vetoes the result; the calling tool returns an error.            |
+| stderr / nonzero exit   | Logged, the rest of the chain continues with the prior result.   |
+
+The public entry point is `(*PluginManager).CallOnToolResultHooks(ctx, tool, result) ([]byte, error)`.
+The orchestrator's tool-execution pipeline does not call it yet —
+plugin authors can invoke it from a custom tool shim or an add-on
+process while the agent-side integration is being finalized.
+
+---
+
+## See also
+
+A worked example that exercises **every surface** described above
+(skills, MCP, commands in both shapes, themes, hooks including veto and
+mutate, inline tools, and the `--project` flag) lives at
+[`plugin-example.md`](./plugin-example.md) — it's the recommended
+starting point for plugin authors who want a copy-paste-able skeleton.

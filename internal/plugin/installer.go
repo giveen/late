@@ -1,12 +1,27 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// runCommand is the package-level seam used by Update to spawn npm and
+// git. Tests override it to assert the exact argv shape without invoking
+// a real package manager; production never touches it.
+var runCommand = func(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run()
+}
+
+// runCommandOutput is the same seam but captures stdout/stderr; used for
+// commands whose output Update needs to inspect (e.g. version probe).
+var runCommandOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
 
 // InstallFromNpm installs a plugin from npm by running 'npm install'.
 // If project is true and a project dir is configured, installs into the project-local dir.
@@ -63,6 +78,7 @@ func InstallFromNpm(pm *PluginManager, pkgName string, projectLocal ...bool) (*I
 		return nil, fmt.Errorf("failed to load installed plugin: %w", err)
 	}
 	plugin.SourceType = "npm"
+	plugin.Source = pkgName
 
 	if err := SavePluginMeta(plugin); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save plugin metadata: %v\n", err)
@@ -114,6 +130,7 @@ func InstallFromGit(pm *PluginManager, url string, projectLocal ...bool) (*Insta
 		return nil, fmt.Errorf("failed to load installed plugin: %w", err)
 	}
 	plugin.SourceType = "git"
+	plugin.Source = url
 
 	if err := SavePluginMeta(plugin); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save plugin metadata: %v\n", err)
@@ -172,6 +189,7 @@ func InstallFromLocal(pm *PluginManager, localPath string, projectLocal ...bool)
 
 	plugin.Path = targetDir
 	plugin.SourceType = "local"
+	plugin.Source = absPath
 
 	if err := SavePluginMeta(plugin); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save plugin metadata: %v\n", err)
@@ -179,6 +197,326 @@ func InstallFromLocal(pm *PluginManager, localPath string, projectLocal ...bool)
 
 	pm.Add(plugin)
 	return plugin, nil
+}
+
+// Install is the unified entry point for the `late plugin install` CLI.
+// It inspects the source string and dispatches to InstallFromGit /
+// InstallFromLocal / InstallFromNpm / marketplace-resolved target based
+// on the shape (URL? relative path? absolute path? scoped name?).
+//
+// classifier rules (in order):
+//   1. looks like a git URL (https?://, git@, github:, gitlab:, bitbucket:) → InstallFromGit
+//   2. looks like a local filesystem path (./, ../, ~/, /) → InstallFromLocal
+//   3. looks like an npm package name (always contains a "/" like @scope/name) → InstallFromNpm
+//   4. bare name → MarketplaceClient.Resolve. On hit: dispatch to the resolved target;
+//      on miss (ErrMarketplaceMiss OR network error): fall back to InstallFromNpm as a
+//      "treat-as-npm-package" path so users can `late plugin install some-pkg` without
+//      requiring registry support.
+//
+// projectLocal mirrors the `--project`/`--local` flag and forwards to every
+// underlying installer unchanged. mc may be nil; Install then uses DefaultRegistry().
+func Install(pm *PluginManager, source string, mc *MarketplaceClient, projectLocal bool) (*InstalledPlugin, error) {
+	if source == "" {
+		return nil, fmt.Errorf("install: empty source")
+	}
+	if looksLikeGitSource(source) {
+		return InstallFromGit(pm, source, projectLocal)
+	}
+	if looksLikeLocalPath(source) {
+		return InstallFromLocal(pm, source, projectLocal)
+	}
+	if looksLikeNpmPackage(source) {
+		return InstallFromNpm(pm, source, projectLocal)
+	}
+	// Bare name: marketplace first, then npm-as-fallback.
+	if mc == nil {
+		mc2 := DefaultRegistry()
+		mc = &mc2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	entry, err := mc.Resolve(ctx, source)
+	if err == nil {
+		switch entry.SourceType() {
+		case "npm":
+			return InstallFromNpm(pm, entry.Npm, projectLocal)
+		case "git":
+			return InstallFromGit(pm, entry.Git, projectLocal)
+		}
+	}
+	// Miss or error → keep treating the bare name as an npm package name.
+	// This is the OMP behavior: bare names that aren't in the registry just
+	// fall through to npm. We log a notice so the user understands the path.
+	_, _ = fmt.Fprintf(os.Stderr,
+		"Notice: marketplace did not match %q (%v); trying npm\n", source, err)
+	return InstallFromNpm(pm, source, projectLocal)
+}
+
+// looksLikeGitSource reports whether source is recognizable as a git URL
+// or one of the supported shorthand hosts. We deliberately accept any host
+// (github:, gitlab:, bitbucket:, or a full URL) but reject bare scopes or
+// relative paths so the npm/local branches stay unambiguous.
+func looksLikeGitSource(source string) bool {
+	if strings.Contains(source, "://") || strings.HasPrefix(source, "git@") {
+		return true
+	}
+	for _, host := range []string{"github:", "gitlab:", "bitbucket:"} {
+		if strings.HasPrefix(source, host) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeLocalPath reports whether source is a filesystem path.
+// Recognized shapes: "./...", "../...", "~/...", or absolute ("/...").
+func looksLikeLocalPath(source string) bool {
+	if strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../") || strings.HasPrefix(source, "~/") {
+		return true
+	}
+	return strings.HasPrefix(source, "/")
+}
+
+// looksLikeNpmPackage reports whether source is shaped like an npm
+// package name. Modern npm naming always requires a slash (scoped or
+// hierarchical), so this is a safe heuristic. Bare names are intentionally
+// NOT classified as npm here — they go through the marketplace branch.
+func looksLikeNpmPackage(source string) bool {
+	if !strings.Contains(source, "/") {
+		return false
+	}
+	// Scoped shortnames must start with '@' and have a slash after the scope.
+	if strings.HasPrefix(source, "@") {
+		parts := strings.SplitN(source, "/", 2)
+		return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+	}
+	return true
+}
+
+// updateGitTempSuffix is appended to the existing plugin dir name when
+// Update clones the new source for an atomic swap. The dot prefix hides
+// it from the PollingWatcher's directory-listing (it will be renamed in
+// the same Write-Lock window — race is bounded by the mutex).
+const updateGitTempSuffix = ".late-update-"
+
+// Update re-installs the named plugin in place using the Source originally
+// captured at install time. SourceType drives the dispatch:
+//   - "git"  → fresh shallow clone into a sibling tmp dir, atomic rename
+//   - "npm"  → `npm install --prefix <dir> <Source>@latest --no-save --quiet` in place
+//   - "marketplace" → look Source up via mc.Resolve, then dispatch
+//   - "local" or empty Source → error (dev symlinks and legacy records can't be auto-updated)
+//
+// Concurrency: we hold RLock only long enough to fetch the InstalledPlugin
+// snapshot, then run all docker/exec work lock-free. The atomic swap
+// (Rename/symlink recreate) happens under pm.mu.Lock() so the watcher
+// (which holds the lock in Discover) sees a stable view.
+func Update(pm *PluginManager, name string, mc *MarketplaceClient) (*InstalledPlugin, error) {
+	if pm == nil {
+		return nil, fmt.Errorf("update: nil plugin manager")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("update: empty plugin name")
+	}
+
+	// Snapshot phase — short RLock, no I/O.
+	pm.mu.RLock()
+	old := pm.plugins[name]
+	pm.mu.RUnlock()
+	if old == nil {
+		return nil, fmt.Errorf("update: plugin %s is not installed", name)
+	}
+	source := old.Source
+	sourceType := old.SourceType
+
+	if sourceType == "local" {
+		return nil, fmt.Errorf("update: %s is a dev symlink; edit the source folder then run `late plugin remove && late plugin link`", name)
+	}
+	if source == "" {
+		return nil, fmt.Errorf("update: no install source recorded for %s; reinstall explicitly with `late plugin install <src>`", name)
+	}
+
+	// Pre-resolve marketplace source if needed (lock-free).
+	if sourceType == "marketplace" {
+		if mc == nil {
+			mc2 := DefaultRegistry()
+			mc = &mc2
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		entry, err := mc.Resolve(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("update: marketplace lookup for %s failed: %w", name, err)
+		}
+		// Reflect the resolved target into the procedure below by
+		// recursing once via a synthetic SourceType swap. We don't
+		// mutate the live InstalledPlugin until the swap window.
+		switch entry.SourceType() {
+		case "npm":
+			source = entry.Npm
+			sourceType = "npm"
+		case "git":
+			source = entry.Git
+			sourceType = "git"
+		default:
+			return nil, fmt.Errorf("update: marketplace entry for %s has no installable target", name)
+		}
+	}
+
+	// Determine the target directory the new artifacts should land in.
+	// Project-local plugins live under pm.ProjectDir(); everything else
+	// goes under pm.PluginsDir(). Use the existing plugin's parent as the
+	// source of truth so we never mis-route an update.
+	targetDir := filepath.Dir(old.Path)
+
+	switch sourceType {
+	case "git":
+		return updateGit(pm, old, source, targetDir)
+	case "npm":
+		return updateNpm(pm, old, source, targetDir)
+	default:
+		return nil, fmt.Errorf("update: unsupported source type %q for %s", sourceType, name)
+	}
+}
+
+// updateGit clones `source` into a unique sibling tmpdir, strips its
+// .git subdir, then atomically swaps it over the existing plugin dir.
+func updateGit(pm *PluginManager, old *InstalledPlugin, source, targetDir string) (*InstalledPlugin, error) {
+	tmp, err := os.MkdirTemp(targetDir, "."+filepath.Base(old.Path)+updateGitTempSuffix)
+	if err != nil {
+		return nil, fmt.Errorf("update: cannot create temp clone dir: %w", err)
+	}
+	defer func() {
+		// Best-effort cleanup if we never made it to the swap window.
+		if _, statErr := os.Stat(tmp); statErr == nil {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+
+	gitURL := expandGitURL(source)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := runCommand(ctx, "git", "clone", "--depth", "1", gitURL, tmp); err != nil {
+		return nil, fmt.Errorf("update: git clone %s failed: %w", gitURL, err)
+	}
+	// Match the fresh-install contract: keep the store clean.
+	_ = os.RemoveAll(filepath.Join(tmp, ".git"))
+
+	// Swap window. Hold the write lock so a concurrent Discover() call
+	// from the PollingWatcher can't race us mid-rename.
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if _, statErr := os.Stat(old.Path); statErr != nil {
+		return nil, fmt.Errorf("update: original plugin dir vanished mid-update: %w", statErr)
+	}
+	if err := os.RemoveAll(old.Path); err != nil {
+		return nil, fmt.Errorf("update: cannot remove old plugin dir: %w", err)
+	}
+	if err := os.Rename(tmp, old.Path); err != nil {
+		return nil, fmt.Errorf("update: cannot move new dir into place: %w", err)
+	}
+
+	loaded, err := LoadPlugin(old.Path)
+	if err != nil {
+		return nil, fmt.Errorf("update: cannot load refreshed plugin: %w", err)
+	}
+	loaded.Source = old.Source
+	loaded.SourceType = old.SourceType
+	if !old.Enabled {
+		loaded.Enabled = false
+	}
+	if err := SavePluginMeta(loaded); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save updated plugin metadata: %v\n", err)
+	}
+	pm.plugins[loaded.Name] = loaded
+	return loaded, nil
+}
+
+// updateNpm runs `npm install --prefix <dir> <pkg>@latest --no-save --quiet`
+// in the existing target directory, then re-creates the symlink the
+// installer would have created on first install. Output is silenced on
+// success and surfaced in the error on failure so user noise stays low.
+func updateNpm(pm *PluginManager, old *InstalledPlugin, source, targetDir string) (*InstalledPlugin, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	out, err := runCommandOutput(ctx, "npm", "install",
+		"--prefix", targetDir, source+"@latest", "--no-save", "--quiet")
+	if err != nil {
+		return nil, fmt.Errorf("update: npm install %s@latest failed: %s: %w",
+			source, strings.TrimSpace(string(out)), err)
+	}
+
+	// Re-resolve the actual node_modules path (covers both bare names and
+	// scoped names like @scope/name). Re-create the symlink without
+	// trusting the previous version.
+	npmDir := filepath.Join(targetDir, "node_modules", source)
+	if _, err := os.Stat(npmDir); os.IsNotExist(err) {
+		parts := strings.SplitN(source, "/", 2)
+		if len(parts) == 2 && strings.HasPrefix(source, "@") {
+			npmDir = filepath.Join(targetDir, "node_modules", parts[0], parts[1])
+		}
+		if _, err := os.Stat(npmDir); os.IsNotExist(err) {
+			return nil, fmt.Errorf("update: npm installed but package not found at expected path %s", npmDir)
+		}
+	}
+	linkDir := filepath.Join(targetDir, source)
+	if err := os.MkdirAll(filepath.Dir(linkDir), 0755); err != nil {
+		return nil, fmt.Errorf("update: cannot prepare symlink parent: %w", err)
+	}
+	rel, err := filepath.Rel(targetDir, npmDir)
+	if err != nil {
+		return nil, fmt.Errorf("update: cannot compute rel symlink: %w", err)
+	}
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if _, lerr := os.Lstat(linkDir); lerr == nil {
+		_ = os.Remove(linkDir)
+	}
+	if err := os.Symlink(rel, linkDir); err != nil {
+		return nil, fmt.Errorf("update: cannot recreate symlink: %w", err)
+	}
+	loaded, err := LoadPlugin(linkDir)
+	if err != nil {
+		return nil, fmt.Errorf("update: cannot load refreshed plugin: %w", err)
+	}
+	loaded.Source = old.Source
+	loaded.SourceType = old.SourceType
+	if !old.Enabled {
+		loaded.Enabled = false
+	}
+	if err := SavePluginMeta(loaded); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save updated plugin metadata: %v\n", err)
+	}
+	pm.plugins[loaded.Name] = loaded
+	return loaded, nil
+}
+
+// UpdateAll iterates every installed plugin and calls Update() on each.
+// One plugin's failure does not stop the loop. Returns the slice of
+// successfully updated plugins (in install order) plus the last error
+// encountered, if any. A plugin whose SourceType is "local" or whose
+// Source is empty is skipped silently and omitted from the returned
+// slice — those are expected to need manual intervention, not auto-update.
+func UpdateAll(pm *PluginManager, mc *MarketplaceClient) ([]*InstalledPlugin, error) {
+	if pm == nil {
+		return nil, fmt.Errorf("update-all: nil plugin manager")
+	}
+	all := pm.All()
+	updated := make([]*InstalledPlugin, 0, len(all))
+	var lastErr error
+	for _, p := range all {
+		if p == nil || p.SourceType == "local" || p.Source == "" {
+			continue
+		}
+		fresh, err := Update(pm, p.Name, mc)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "update: %s: %v\n", p.Name, err)
+			lastErr = err
+			continue
+		}
+		updated = append(updated, fresh)
+	}
+	return updated, lastErr
 }
 
 // RemovePlugin removes a plugin from the global or project-local store and the manager registry.

@@ -14,6 +14,10 @@ import (
 	"late/internal/common"
 )
 
+// Compile-time assertion: HookedMessage now takes a context so the TUI
+// can cancel a misbehaving plugin. Existing tests below were updated
+// to pass context.Background().
+
 // helper: write a small POSIX shell script
 func writeExecutableShell(t *testing.T, path, body string) {
 	t.Helper()
@@ -106,7 +110,7 @@ func TestRunHook_TimeoutEnforced(t *testing.T) {
 // 5. HookedMessage: empty/no hooks returns input unchanged
 func TestHookedMessage_NoHooksReturnsInput(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())
-	if got := pm.HookedMessage("hi"); got != "hi" {
+	if got := pm.HookedMessage(context.Background(), "hi"); got != "hi" {
 		t.Fatalf("expected unchanged, got %q", got)
 	}
 }
@@ -120,7 +124,7 @@ func TestHookedMessage_TransformsText(t *testing.T) {
 	writeExecutableShell(t, filepath.Join(p.Path, "wrap.sh"), `cat; echo`)
 	p.Path = filepath.Join(pluginDir, "msg-wrap")
 	pm.Add(p)
-	got := pm.HookedMessage("hi")
+	got := pm.HookedMessage(context.Background(), "hi")
 	if got != "hi" {
 		t.Fatalf("expected 'hi', got %q (note: shell `echo` without args prints empty)", got)
 	}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"late/internal/common"
 	"late/internal/git"
@@ -822,6 +823,59 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				})
 				m.updateViewport()
 				return m, clearCmd
+			}
+
+			// Plugin command handler dispatch.
+			//
+			// If the input matches a registered plugin command AND a
+			// CommandHandler is wired (see cmd/late/main.go), run the
+			// handler synchronously against the trailing args. The
+			// handler may:
+			//   - return handled=true with non-empty output → toast
+			//     "executed <name>: <first line>"; run ends here.
+			//   - return handled=true with empty output  → silent toast.
+			//   - return handled=true with err != nil    → error toast.
+			//   - return handled=false                   → fall through to
+			//     the legacy "dispatch as a plain prompt" path below.
+			if isPluginCmd(cmd, m.PluginCommands) && m.CommandHandler != nil {
+				parts := strings.Fields(cmd)
+				if len(parts) > 0 {
+					name := parts[0]
+					args := parts[1:]
+					output, handled, hErr := m.CommandHandler(context.Background(), name, args)
+					if handled {
+						// Capture in input history (avoid consecutive duplicates).
+						if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != cmd {
+							m.InputHistory = append(m.InputHistory, cmd)
+						}
+						m.HistoryIndex = -1
+						m.HistoryWorking = ""
+
+						// Reset input box.
+						m.Input.Reset()
+						m.Input.SetValue("> ")
+
+						// Toast UX for handler output.
+						if hErr != nil {
+							m.ToastMessage = fmt.Sprintf("error executing %s: %v", name, hErr)
+						} else if output != "" {
+							firstLine := strings.SplitN(strings.TrimSpace(output), "\n", 2)[0]
+							m.ToastMessage = fmt.Sprintf("executed %s: %s", name, firstLine)
+							if len(m.ToastMessage) > 80 {
+								m.ToastMessage = m.ToastMessage[:77] + "..."
+							}
+						} else {
+							m.ToastMessage = fmt.Sprintf("%s executed", name)
+						}
+						m.ToastExpireTime = time.Now().UnixMilli() + 3000
+						clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+							return clearToastMsg{}
+						})
+						m.updateViewport()
+						return m, clearCmd
+					}
+					// handled=false: fall through to legacy plain-prompt path below.
+				}
 			}
 
 			// Plugin-provided slash commands — check if the input is a registered plugin command

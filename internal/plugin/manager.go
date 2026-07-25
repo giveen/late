@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"late/internal/skill"
 	"os"
@@ -291,6 +292,7 @@ func (pm *PluginManager) BuildMCPConfigMap() map[string]MCPServerConfig {
 }
 
 // PluginCommands returns all slash commands declared by enabled plugins.
+// Names are normalized to start with "/".
 func (pm *PluginManager) PluginCommands() []string {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -300,15 +302,48 @@ func (pm *PluginManager) PluginCommands() []string {
 			continue
 		}
 		for _, c := range p.Late.Commands {
-			// Ensure the command starts with "/"
-			if !strings.HasPrefix(c, "/") {
-				c = "/" + c
+			name := c.Name
+			if name == "" {
+				continue
 			}
-			cmds = append(cmds, c)
+			if !strings.HasPrefix(name, "/") {
+				name = "/" + name
+			}
+			cmds = append(cmds, name)
 		}
 	}
 	sort.Strings(cmds)
 	return cmds
+}
+
+// HasCommandHandler reports whether any enabled plugin declares a
+// Handler script for the given slash command. The "/" prefix is
+// tolerated.
+//
+// This is a pure, side-effect-free lookup: it must never spawn a
+// subprocess or write to stderr. Callers (e.g. ToolRegistry filters,
+// permission gates) invoke it on the hot path, so duplicating the
+// scan here is intentional and cheaper than delegating to
+// HandleCommand.
+func (pm *PluginManager) HasCommandHandler(cmdName string) bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	normalized := strings.TrimPrefix(cmdName, "/")
+	for _, p := range pm.plugins {
+		if !p.Enabled || p.Late == nil {
+			continue
+		}
+		for _, c := range p.Late.Commands {
+			if c.Handler == "" {
+				continue
+			}
+			if strings.TrimPrefix(c.Name, "/") == normalized {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // lateSkillsDir returns the user-level skills directory.

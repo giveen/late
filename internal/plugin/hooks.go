@@ -57,9 +57,11 @@ func runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []b
 	execCtx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, resolved[0:len(resolved):len(resolved)], resolved) //nolint:gosimple // see below
-	// Above: exec.CommandContext wants its first arg as the lookup name. We pass
-	// resolved twice so we get a stable argv[0] and matched binary.
+	// exec.CommandContext's first arg is the lookup name; the second arg
+	// is argv[0]. Passing the resolved absolute path twice gives a stable,
+	// matches-lookup binary and avoids any three-index slicing (which is
+	// invalid for Go strings).
+	cmd := exec.CommandContext(execCtx, resolved, resolved)
 	cmd.Dir = pluginDir
 
 	if len(stdin) > 0 {
@@ -103,6 +105,11 @@ type hookData struct {
 	scripts    []string
 }
 
+// snapshotHooks returns every plugin that declares scripts for the given
+// hook type, sorted by plugin name (then per-script filename for
+// tie-breaking). The sort is the contract for sequential hook pipelines:
+// onInput / onMessageSend must run plugins in a deterministic order so
+// the stdout->stdin chain produces the same transformation every time.
 func (pm *PluginManager) snapshotHooks(t string) []hookData {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -116,10 +123,18 @@ func (pm *PluginManager) snapshotHooks(t string) []hookData {
 		switch t {
 		case "tool-call":
 			scripts = p.Late.Hooks.OnToolCall
+		case "tool-result":
+			scripts = p.Late.Hooks.OnToolResult
 		case "session-start":
 			scripts = p.Late.Hooks.OnSessionStart
+		case "turn-start":
+			scripts = p.Late.Hooks.OnTurnStart
+		case "turn-end":
+			scripts = p.Late.Hooks.OnTurnEnd
 		case "message-send":
 			scripts = p.Late.Hooks.OnMessageSend
+		case "input":
+			scripts = p.Late.Hooks.OnInput
 		default:
 			return nil
 		}
@@ -132,6 +147,17 @@ func (pm *PluginManager) snapshotHooks(t string) []hookData {
 			scripts:    append([]string(nil), scripts...),
 		})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].pluginName != out[j].pluginName {
+			return out[i].pluginName < out[j].pluginName
+		}
+		// Tie-break on first script filename so two plugins whose names
+		// match (e.g. "foo" and "foo") still order deterministically.
+		if len(out[i].scripts) == 0 || len(out[j].scripts) == 0 {
+			return len(out[i].scripts) < len(out[j].scripts)
+		}
+		return out[i].scripts[0] < out[j].scripts[0]
+	})
 	return out
 }
 
@@ -167,10 +193,19 @@ func (pm *PluginManager) fanout(ctx context.Context, eventType string, stdinFor 
 }
 
 // BuildHookMiddlewares returns one common.ToolMiddleware per enabled plugin
-// that declares OnToolCall hooks. Each middleware fans out to its plugin's
-// scripts concurrently, then unconditionally calls next() so the rest of
-// the chain runs normally. Hooks never block tool execution today; they
-// only emit observations.
+// that declares OnToolCall hooks. Each middleware runs its plugin's scripts
+// sequentially (so veto / argument mutation is deterministic across a
+// plugin's own scripts) and then unconditionally calls next() so the rest
+// of the chain runs normally — UNLESS a script returns the literal veto
+// string "blocked", in which case the middleware aborts the chain with an
+// error.
+//
+// hook contract (per script, in declaration order):
+//   - empty / non-JSON stdout → pass-through (call unchanged, next() runs)
+//   - JSON-valued stdout → REPLACES call.Function.Arguments (and next() runs)
+//   - literal stdout "blocked" → call is vetoed, next() is SKIPPED, error
+//     returned. The veto wins even if earlier scripts mutated arguments;
+//     this is the recommended way to write "block dangerous commands" hooks.
 func (pm *PluginManager) BuildHookMiddlewares() []common.ToolMiddleware {
 	hooks := pm.snapshotHooks("tool-call")
 	if len(hooks) == 0 {
@@ -182,27 +217,25 @@ func (pm *PluginManager) BuildHookMiddlewares() []common.ToolMiddleware {
 		h := h // capture
 		mw := func(next common.ToolRunner) common.ToolRunner {
 			return func(ctx context.Context, call client.ToolCall) (string, error) {
-				// Build the stdin payload once per call.
-				payload, _ := json.Marshal(ToolCallHookPayload{
-					Tool:      call.Function.Name,
-					Arguments: json.RawMessage(call.Function.Arguments),
-					Timestamp: time.Now().UTC().Format(time.RFC3339),
-				})
-				var wg sync.WaitGroup
 				for _, script := range h.scripts {
-					wg.Add(1)
-					go func(script string) {
-						defer wg.Done()
-						out, err := runHook(ctx, h.pluginDir, script, payload)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "[%s/onToolCall/%s] %v\n", h.pluginName, script, err)
-						}
-						if out != "" {
-							fmt.Fprintf(os.Stderr, "[%s/onToolCall/%s] %s\n", h.pluginName, script, out)
-						}
-					}(script)
+					payload, _ := json.Marshal(ToolCallHookPayload{
+						Tool:      call.Function.Name,
+						Arguments: json.RawMessage(call.Function.Arguments),
+						Timestamp: time.Now().UTC().Format(time.RFC3339),
+					})
+					out, err := runHook(ctx, h.pluginDir, script, payload)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "[%s/onToolCall/%s] %v\n", h.pluginName, script, err)
+						continue
+					}
+					if out == "blocked" {
+						return "", fmt.Errorf("tool call %q blocked by plugin %q", call.Function.Name, h.pluginName)
+					}
+					if out != "" && json.Valid([]byte(out)) {
+						// Mutate the call's arguments before next() runs.
+						call.Function.Arguments = json.RawMessage(out)
+					}
 				}
-				wg.Wait()
 				return next(ctx, call)
 			}
 		}
@@ -217,19 +250,108 @@ func (pm *PluginManager) CallOnSessionStartHooks() {
 	pm.fanout(context.Background(), "session-start", nil)
 }
 
-// HookedMessage applies OnMessageSend hooks sequentially (after sort by
-// plugin name) and returns the transformed message. By default each hook
-// sees the output of the previous hook. If no hooks are registered, the
-// input is returned unchanged.
-func (pm *PluginManager) HookedMessage(text string) string {
-	hooks := pm.snapshotHooks("message-send")
+// CallOnTurnStartHooks fires OnTurnStart hooks for all enabled plugins in
+// parallel before the agent's response cycle begins. fire-and-forget.
+func (pm *PluginManager) CallOnTurnStartHooks() {
+	pm.fanout(context.Background(), "turn-start", nil)
+}
+
+// CallOnTurnEndHooks fires OnTurnEnd hooks for all enabled plugins in
+// parallel after the agent's response cycle ends. fire-and-forget.
+func (pm *PluginManager) CallOnTurnEndHooks() {
+	pm.fanout(context.Background(), "turn-end", nil)
+}
+
+// CallOnToolResultHooks fires OnToolResult hooks sequentially after each
+// tool invocation completes. The payload is JSON of
+// {"tool": name, "result": resultBytes} on each plugin's stdin. Per-script
+// contract matches BuildHookMiddlewares so plugins can reason uniformly:
+//   - empty stdout → pass-through (result unchanged)
+//   - non-empty JSON stdout → REPLACE result bytes with the hook's stdout
+//   - literal stdout "blocked" → drop the result; the hook returns an error
+//     (so callers surface a "tool result was blocked by plugin X" message)
+//   - errors logged + skipped, never abort the chain
+//
+// Ordering is deterministic: snapshotHooks() sorts by plugin name then
+// first script, so the same plugin chain runs in the same order on every
+// invocation. Returns the (possibly mutated) result bytes plus any veto
+// error from a "blocked" return.
+func (pm *PluginManager) CallOnToolResultHooks(ctx context.Context, tool string, result []byte) ([]byte, error) {
+	hooks := pm.snapshotHooks("tool-result")
+	if len(hooks) == 0 {
+		return result, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for _, h := range hooks {
+		for _, script := range h.scripts {
+			payload, _ := json.Marshal(map[string]any{
+				"tool":   tool,
+				"result": json.RawMessage(result),
+			})
+			out, err := runHook(ctx, h.pluginDir, script, payload)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s/onToolResult/%s] %v\n", h.pluginName, script, err)
+				continue
+			}
+			if out == "blocked" {
+				return nil, fmt.Errorf("tool result %q blocked by plugin %q", tool, h.pluginName)
+			}
+			if out != "" && json.Valid([]byte(out)) {
+				result = []byte(out)
+			}
+		}
+	}
+	return result, nil
+}
+
+// CallOnInputHooks applies OnInput hooks sequentially (after sort by plugin
+// name) and returns the transformed message. Each hook sees the output of
+// the previous hook. If no hooks are registered, the input is returned
+// unchanged. The supplied context is forwarded to each hook so the TUI
+// can cancel a misbehaving plugin via its root context.
+func (pm *PluginManager) CallOnInputHooks(ctx context.Context, text string) string {
+	hooks := pm.snapshotHooks("input")
 	if len(hooks) == 0 || text == "" {
 		return text
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	current := text
 	for _, h := range hooks {
 		for _, script := range h.scripts {
-			out, err := runHook(context.Background(), h.pluginDir, script, []byte(current))
+			out, err := runHook(ctx, h.pluginDir, script, []byte(current))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s/onInput/%s] %v\n", h.pluginName, script, err)
+				continue
+			}
+			if out != "" {
+				current = out
+			}
+		}
+	}
+	return current
+}
+
+// HookedMessage applies OnMessageSend hooks sequentially (after sort by
+// plugin name) and returns the transformed message. By default each hook
+// sees the output of the previous hook. If no hooks are registered, the
+// input is returned unchanged. The supplied context is forwarded to
+// each hook so the TUI can cancel a misbehaving plugin.
+func (pm *PluginManager) HookedMessage(ctx context.Context, text string) string {
+	hooks := pm.snapshotHooks("message-send")
+	if len(hooks) == 0 || text == "" {
+		return text
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	current := text
+	for _, h := range hooks {
+		for _, script := range h.scripts {
+			out, err := runHook(ctx, h.pluginDir, script, []byte(current))
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[%s/onMessageSend/%s] %v\n", h.pluginName, script, err)
 				continue

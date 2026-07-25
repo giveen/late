@@ -113,18 +113,9 @@ func handlePluginInstall(pm *PluginManager, args []string) {
 		return
 	}
 
-	var plugin *InstalledPlugin
-	var err error
-
-	// Detect source type
-	if isGitURL(source) {
-		plugin, err = InstallFromGit(pm, source, project)
-	} else if isLocalPath(source) {
-		plugin, err = InstallFromLocal(pm, source, project)
-	} else {
-		plugin, err = InstallFromNpm(pm, source, project)
-	}
-
+	// Single dispatcher: classifies URL/path/npm/layout and falls through
+	// to marketplace → npm for unresolved bare names.
+	plugin, err := Install(pm, source, nil, project)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to install plugin: %v\n", err)
 		return
@@ -238,67 +229,36 @@ func handlePluginLink(pm *PluginManager, args []string) {
 }
 
 // handlePluginUpdate updates installed plugins.
+//
+// Behavior:
+//   - `late plugin update` (no args)    → UpdateAll — re-installs every npm/git
+//     plugin in place, skipping local.
+//   - `late plugin update <name>`       → Update one plugin by name. Resolves
+//     marketplace-source plugins via the default marketplace client on the fly.
+//   - `late plugin update <name> local` → Refused with a hint to edit the
+//     source directory directly.
 func handlePluginUpdate(pm *PluginManager, args []string) {
-	name := ""
 	if len(args) > 0 {
-		name = args[0]
-	}
-
-	if name != "" {
-		plugin := pm.Plugin(name)
-		if plugin == nil {
-			fmt.Fprintf(os.Stderr, "Error: plugin %s is not installed\n", name)
+		name := args[0]
+		if _, err := Update(pm, name, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to update plugin %s: %v\n", name, err)
 			return
 		}
-		updatePlugin(pm, plugin)
-	} else {
-		for _, p := range pm.All() {
-			updatePlugin(pm, p)
-		}
-	}
-}
-
-// updatePlugin attempts to update a single plugin based on its source type.
-func updatePlugin(pm *PluginManager, plugin *InstalledPlugin) {
-	switch plugin.SourceType {
-	case "git":
-		// For git-installed plugins, pull the latest
-		fmt.Printf("Updating %s (git pull)...\n", plugin.Name)
-		cmd := exec.Command("git", "-C", plugin.Path, "pull", "--ff-only")
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: git pull failed for %s: %v\n", plugin.Name, err)
-		}
-	case "npm":
-		fmt.Printf("Updating %s (npm update)...\n", plugin.Name)
-		cmd := exec.Command("npm", "update", "--prefix", pm.PluginsDir(), plugin.Name)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: npm update failed for %s: %v\n", plugin.Name, err)
-		}
-	case "local":
-		fmt.Printf("Skipping %s (local path — update the source directory directly)\n", plugin.Name)
-	default:
-		fmt.Printf("Skipping %s (unknown source type: %s)\n", plugin.Name, plugin.SourceType)
-	}
-
-	// Reload the plugin manifest
-	updated, err := LoadPlugin(plugin.Path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to reload plugin %s: %v\n", plugin.Name, err)
 		return
 	}
-	updated.SourceType = plugin.SourceType
-	updated.Enabled = plugin.Enabled
 
-	if err := SavePluginMeta(updated); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to save metadata: %v\n", err)
+	results, err := UpdateAll(pm, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: bulk update failed: %v\n", err)
+		// Surface partial state so the user can see what succeeded.
+		for _, p := range results {
+			fmt.Printf("  %s v%s\n", p.Name, p.Version)
+		}
+		return
 	}
-
-	pm.Add(updated)
-	fmt.Printf("Updated %s v%s\n", updated.Name, updated.Version)
+	for _, p := range results {
+		fmt.Printf("Updated %s v%s\n", p.Name, p.Version)
+	}
 }
 
 // handlePluginEnable enables or disables a plugin.
@@ -332,32 +292,8 @@ func handlePluginEnable(pm *PluginManager, args []string, enable bool) {
 	fmt.Printf("%s %s\n", plugin.Name, state)
 }
 
-// isGitURL checks if a source string looks like a Git URL.
-func isGitURL(src string) bool {
-	if strings.HasPrefix(src, "https://") || strings.HasPrefix(src, "http://") {
-		return strings.HasSuffix(src, ".git") || strings.Contains(src, "github.com/") || strings.Contains(src, "gitlab.com/") || strings.Contains(src, "bitbucket.org/")
-	}
-	if strings.Contains(src, ":") && !strings.Contains(src, "://") {
-		prefix := strings.SplitN(src, ":", 2)[0]
-		switch prefix {
-		case "github", "gitlab", "bitbucket":
-			return true
-		}
-	}
-	return false
-}
-
-// isLocalPath checks if a source string looks like a local filesystem path.
-func isLocalPath(src string) bool {
-	if strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") || strings.HasPrefix(src, "/") || strings.HasPrefix(src, "~") {
-		return true
-	}
-	// Check if it exists as a local path
-	if _, err := os.Stat(src); err == nil {
-		return true
-	}
-	return false
-}
+// (isGitURL and isLocalPath were removed: Install() now classifies the
+// source string itself, including marketplace fallback for bare names.)
 
 // Sort plugins by name
 type byName []*InstalledPlugin

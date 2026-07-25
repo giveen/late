@@ -13,9 +13,82 @@ import (
 type LateManifest struct {
 	Skills   []string            `json:"skills,omitempty"`   // relative paths to skill directories
 	MCP      *LateMCPManifest    `json:"mcp,omitempty"`      // MCP server definitions
-	Commands []string            `json:"commands,omitempty"` // slash command names
+	Commands LateCommands        `json:"commands,omitempty"` // slash command names (see LateCommands for back-compat)
 	Themes   []string            `json:"themes,omitempty"`   // relative paths to theme JSON files
 	Hooks    *LateHooksManifest  `json:"hooks,omitempty"`    // hook script definitions
+	Tools    []LateToolManifest  `json:"tools,omitempty"`    // inline agent-callable tools (no MCP needed)
+}
+
+// LateCommands is a backward-compatible adapter for the "commands" field.
+// Plugins written before command handlers existed declare commands as a
+// flat array of strings; plugins written after can declare objects with
+// a per-command "handler" script path. This type accepts both shapes:
+//
+//	"commands": ["/weather", "/git"]
+//
+//	"commands": [{"name": "/weather", "handler": "scripts/weather.sh"}]
+type LateCommands []LateCommandManifest
+
+// UnmarshalJSON accepts either an array of strings or an array of objects.
+// On parse failure for both shapes the error is returned verbatim.
+func (lc *LateCommands) UnmarshalJSON(data []byte) error {
+	var stringForms []string
+	if err := json.Unmarshal(data, &stringForms); err == nil {
+		out := make(LateCommands, 0, len(stringForms))
+		for _, s := range stringForms {
+			out = append(out, LateCommandManifest{Name: s})
+		}
+		*lc = out
+		return nil
+	}
+	var objForms []LateCommandManifest
+	if err := json.Unmarshal(data, &objForms); err != nil {
+		return err
+	}
+	*lc = objForms
+	return nil
+}
+
+// MarshalJSON encodes the late commands back to a string array when no
+// command has a handler, so round-tripping through DefaultManifest stays
+// readable. Otherwise emits the object form so handlers survive.
+func (lc LateCommands) MarshalJSON() ([]byte, error) {
+	hasHandler := false
+	for _, c := range lc {
+		if c.Handler != "" {
+			hasHandler = true
+			break
+		}
+	}
+	if !hasHandler {
+		names := make([]string, len(lc))
+		for i, c := range lc {
+			names[i] = c.Name
+		}
+		return json.Marshal(names)
+	}
+	return json.Marshal([]LateCommandManifest(lc))
+}
+
+// LateCommandManifest describes a single plugin slash command. The Name
+// is required; Handler is optional. When Handler is set, the TUI runs
+// the script with the trailing args (JSON-encoded) on stdin and shows
+// the stdout as the chat response. When Handler is empty, the command
+// falls back to the legacy "dispatch as a plain prompt" behavior.
+type LateCommandManifest struct {
+	Name    string `json:"name"`              // slash command name, with or without leading "/"
+	Handler string `json:"handler,omitempty"` // optional relative path to a handler script
+}
+
+// LateToolManifest declares a single agent-callable tool inline within
+// the manifest, removing the need for an MCP server wrapper. Scripts
+// receive the tool arguments JSON on stdin and must return the result
+// on stdout.
+type LateToolManifest struct {
+	Name        string          `json:"name"`                  // tool name, will be namespaced as "<plugin>:<name>"
+	Description string          `json:"description"`           // shown to the model in the tool list
+	Script      string          `json:"script"`                // relative path to the executable script
+	Parameters  json.RawMessage `json:"parameters"`            // JSON Schema fragment describing arguments
 }
 
 // LateMCPManifest holds MCP server definitions declared by a plugin.
@@ -34,10 +107,32 @@ type MCPServerConfig struct {
 }
 
 // LateHooksManifest defines hook scripts a plugin provides.
+//
+// Hook contract:
+//   - onToolCall receives the ToolCall as JSON on stdin. The hook may:
+//     1. Return JSON (any valid JSON object/string) to mutate the call's
+//        "arguments" field before next() runs (Gate via mutate).
+//     2. Return exactly the string "blocked" to veto the tool execution.
+//        The next() in the chain is skipped and late returns an error
+//        result to the agent.
+//     3. Return empty / non-JSON to pass through unchanged.
+//   - onToolResult receives {"tool": "...", "result": "..."} via stdin.
+//     Read-only observation hook; the return value is currently logged
+//     but not used to mutate anything.
+//   - onSessionStart, onTurnStart, onTurnEnd fire before/after their
+//     respective lifecycle moments. They receive an empty JSON object
+//     on stdin. Errors and stderr are forwarded to the user's TUI.
+//   - onMessageSend and onInput form a sequential transform pipeline;
+//     each hook sees the previous hook's stdout. Smoke (no stdout) is
+//     treated as a no-op so a hook can be a no-op for some inputs.
 type LateHooksManifest struct {
 	OnToolCall     []string `json:"onToolCall,omitempty"`     // relative paths to scripts
+	OnToolResult   []string `json:"onToolResult,omitempty"`   // relative paths to scripts
 	OnSessionStart []string `json:"onSessionStart,omitempty"` // relative paths to scripts
+	OnTurnStart    []string `json:"onTurnStart,omitempty"`    // relative paths to scripts
+	OnTurnEnd      []string `json:"onTurnEnd,omitempty"`      // relative paths to scripts
 	OnMessageSend  []string `json:"onMessageSend,omitempty"`  // relative paths to scripts
+	OnInput        []string `json:"onInput,omitempty"`        // relative paths to scripts
 }
 
 // PackageJSON represents the minimal package.json fields we care about.
@@ -55,6 +150,7 @@ type InstalledPlugin struct {
 	Description string       `json:"description,omitempty"`
 	Path        string       `json:"path"`        // absolute path to the plugin directory
 	SourceType  string       `json:"source_type"` // "npm", "git", "local", "marketplace"
+	Source      string       `json:"source,omitempty"` // original install string passed by the user (pkg, URL, path, or marketplace name); empty for symlinked local plugins
 	Enabled     bool         `json:"enabled"`
 	Late        *LateManifest `json:"late"`        // the late extension manifest
 }
@@ -99,7 +195,12 @@ func (p *InstalledPlugin) ResolveSurfaces() *SurfaceSources {
 		src.Themes = append(src.Themes, abs)
 	}
 
-	src.Commands = append([]string{}, p.Late.Commands...)
+	src.Commands = make([]string, 0, len(p.Late.Commands))
+	for _, c := range p.Late.Commands {
+		if c.Name != "" {
+			src.Commands = append(src.Commands, c.Name)
+		}
+	}
 
 	return src
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"late/internal/client"
 	"late/internal/common"
 	"late/internal/git"
@@ -194,6 +195,18 @@ type Model struct {
 	// (*PluginManager).HookedMessage. When nil, outgoing user messages are
 	// sent through unchanged. See Model.ApplyMessageHook.
 	MessageHook func(string) string
+
+	// Plugin-provided slash-command handler. Set at startup from
+	// (*PluginManager).HandleCommand. When nil, plugin commands fall
+	// through to plain-prompt dispatch (legacy behavior).
+	//
+	// signature: (ctx, name, args) -> (output, handled, err)
+	//   - handled=false → caller should submit the original input as a
+	//     plain user prompt.
+	//   - handled=true && err==nil → handler ran; output may be empty
+	//     (silent command) or non-empty (display as toast preview).
+	//   - handled=true && err!=nil → surface the error as a toast.
+	CommandHandler func(ctx context.Context, name string, args []string) (string, bool, error)
 
 	// SelectedTheme records the namespaced theme id currently in use
 	// ("<pluginname>:<themename>"). Empty means the bundled LateTheme.
