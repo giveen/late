@@ -8,7 +8,7 @@ import (
 func TestPluginCommands_Empty(t *testing.T) {
 	m := &Model{}
 
-	cmds := m.PluginCommands()
+	cmds := m.PluginCommands
 	if cmds != nil {
 		t.Errorf("expected nil, got %v", cmds)
 	}
@@ -20,7 +20,7 @@ func TestPluginCommands_SetAndGet(t *testing.T) {
 	expected := []string{"/query", "/graph", "/analyze"}
 
 	m.SetPluginCommands(expected)
-	cmds := m.PluginCommands()
+	cmds := m.ListedPluginCommands()
 
 	if len(cmds) != len(expected) {
 		t.Fatalf("expected %d commands, got %d", len(expected), len(cmds))

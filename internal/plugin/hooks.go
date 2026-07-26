@@ -233,7 +233,8 @@ func (pm *PluginManager) BuildHookMiddlewares() []common.ToolMiddleware {
 					}
 					if out != "" && json.Valid([]byte(out)) {
 						// Mutate the call's arguments before next() runs.
-						call.Function.Arguments = json.RawMessage(out)
+						// json.RawMessage is []byte, so convert the runHook string.
+						call.Function.Arguments = json.RawMessage([]byte(out))
 					}
 				}
 				return next(ctx, call)

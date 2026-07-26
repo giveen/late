@@ -121,7 +121,7 @@ func (w *PollingWatcher) takeSnapshot() map[string]pluginSnapshotEntry {
 	if d := w.manager.projectDir; d != "" {
 		dirs = append(dirs, d)
 	}
-	w.projectDirsSnapshot := append(w.projectDirsSnapshot[:0], w.projectDirs...)
+	w.projectDirsSnapshot = append(w.projectDirsSnapshot[:0], w.projectDirs...)
 	w.manager.mu.RUnlock()
 
 	// Deduplicate — SetProjectDir() and AddWatchDir() may produce the same path.
@@ -180,7 +180,6 @@ func (w *PollingWatcher) snapshotDir(dir string, snapshot map[string]pluginSnaps
 			hasLateFile = true
 			lateFileMod = fi.ModTime()
 		} else {
-			_ = os.Stat(filepath.Join(dirPath, "package.json"))
 			if _, err := os.Stat(filepath.Join(dirPath, "package.json")); err == nil {
 				hasLateFile = true
 			}

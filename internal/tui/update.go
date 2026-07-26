@@ -1346,9 +1346,12 @@ func (m *Model) SetPluginCommands(commands []string) {
 	copy(m.PluginCommands, commands)
 }
 
-// PluginCommands returns the list of plugin-provided slash commands currently registered.
-// External code (e.g., main.go, tests) can call this to query which commands are active.
-func (m *Model) PluginCommands() []string {
+// ListedPluginCommands returns the list of plugin-provided slash commands
+// currently registered. Renamed from `PluginCommands()` to avoid shadowing
+// the same-named field on the Model struct (Go would resolve the bare
+// identifier inside the method body to the method itself, breaking
+// `len(m.PluginCommands)` callers in update.go/view.go).
+func (m *Model) ListedPluginCommands() []string {
 	if len(m.PluginCommands) == 0 {
 		return nil
 	}

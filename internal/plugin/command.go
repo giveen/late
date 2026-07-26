@@ -2,8 +2,6 @@ package plugin
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -160,7 +158,7 @@ func handlePluginInstall(pm *PluginManager, args []string) {
 // parseProjectFlag checks if --project flag is present in args and returns
 // the flag state and remaining args (the source).
 func parseProjectFlag(args []string) (project bool, rest string) {
-	for i, a := range args {
+	for _, a := range args {
 		if a == "--project" || a == "--local" {
 			// Return remaining args after removing the flag
 			var remaining []string
