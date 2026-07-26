@@ -49,6 +49,101 @@ func writeTestPlugin(t *testing.T, parentDir, name string, manifest *LateManifes
 	return p
 }
 
+// TestBuildToolResultMiddlewares_PostExecMutate: the post-execution
+// middleware calls the inner runner first, then applies onToolResult hooks.
+func TestBuildToolResultMiddlewares_PostExecMutate(t *testing.T) {
+	root := t.TempDir()
+	pluginsDir := filepath.Join(root, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hookDir := filepath.Join(pluginsDir, "muter")
+	if err := os.MkdirAll(hookDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(hookDir, "mute.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho '{\"mutated\":true}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	pkg := map[string]any{
+		"name":    "muter",
+		"version": "1.0.0",
+		"late": map[string]any{
+			"hooks": map[string]any{
+				"onToolResult": []string{"mute.sh"},
+			},
+		},
+	}
+	pkgBytes, _ := json.Marshal(pkg)
+	if err := os.WriteFile(filepath.Join(hookDir, "package.json"), pkgBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pm, err := NewPluginManager(pluginsDir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pm.Discover(); err != nil {
+		t.Fatal(err)
+	}
+	p := pm.Plugin("muter")
+	if p == nil {
+		t.Fatal("expected muter plugin to be discovered")
+	}
+	p.Enabled = true
+
+	mws := pm.BuildToolResultMiddlewares()
+	if len(mws) != 1 {
+		t.Fatalf("expected 1 middleware, got %d", len(mws))
+	}
+
+	innerRan := false
+	inner := func(ctx context.Context, call client.ToolCall) (string, error) {
+		innerRan = true
+		return `{"original":true}`, nil
+	}
+
+	wrapped := mws[0](inner)
+	result, err := wrapped(context.Background(), client.ToolCall{
+		Function: client.FunctionCall{Name: "test_tool"},
+	})
+	if err != nil {
+		t.Fatalf("middleware error: %v", err)
+	}
+	if !innerRan {
+		t.Fatal("inner runner was never called")
+	}
+	if !strings.Contains(result, `"mutated":true`) {
+		t.Fatalf("expected mutated result, got %q", result)
+	}
+}
+
+// TestBuildToolResultMiddlewares_SkipOnError: if the inner runner returns
+// an error, the middleware does NOT call onToolResult hooks.
+func TestBuildToolResultMiddlewares_SkipOnError(t *testing.T) {
+	pm, err := NewPluginManager(t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mws := pm.BuildToolResultMiddlewares()
+	if len(mws) != 1 {
+		t.Fatalf("expected 1 middleware, got %d", len(mws))
+	}
+
+	inner := func(ctx context.Context, call client.ToolCall) (string, error) {
+		return "", os.ErrNotExist
+	}
+	wrapped := mws[0](inner)
+	_, err = wrapped(context.Background(), client.ToolCall{
+		Function: client.FunctionCall{Name: "failer"},
+	})
+	if err == nil {
+		t.Fatal("expected inner error to propagate")
+	}
+}
+
 // 1. Hook path containment: rejects escaping paths
 func TestResolveHookPath_RejectsTraversal(t *testing.T) {
 	pluginDir := t.TempDir()

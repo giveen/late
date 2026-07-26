@@ -262,6 +262,36 @@ func (pm *PluginManager) CallOnTurnEndHooks() {
 	pm.fanout(context.Background(), "turn-end", nil)
 }
 
+// BuildToolResultMiddlewares returns post-execution ToolMiddlewares that
+// fire onToolResult hooks after each tool completes successfully.
+//
+// Unlike BuildHookMiddlewares (which creates one middleware per plugin so
+// each can independently veto/mutate the call pre-flight), this returns a
+// single middleware that delegates to CallOnToolResultHooks — which already
+// iterates every enabled plugin's scripts in deterministic order.
+//
+// If the inner runner returns an error (tool execution failed), the
+// hooks are skipped and the original error passes through unchanged.
+// A hook that returns "blocked" generates a veto error visible to the
+// LLM caller as the tool error message.
+func (pm *PluginManager) BuildToolResultMiddlewares() []common.ToolMiddleware {
+	return []common.ToolMiddleware{
+		func(next common.ToolRunner) common.ToolRunner {
+			return func(ctx context.Context, call client.ToolCall) (string, error) {
+				result, err := next(ctx, call)
+				if err != nil {
+					return result, err
+				}
+				mutated, hookErr := pm.CallOnToolResultHooks(ctx, call.Function.Name, []byte(result))
+				if hookErr != nil {
+					return "", hookErr
+				}
+				return string(mutated), nil
+			}
+		},
+	}
+}
+
 // CallOnToolResultHooks fires OnToolResult hooks sequentially after each
 // tool invocation completes. The payload is JSON of
 // {"tool": name, "result": resultBytes} on each plugin's stdin. Per-script

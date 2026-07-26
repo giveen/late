@@ -494,6 +494,7 @@ func main() {
 		mws := []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, sess.Registry)}
 		if pluginManager != nil {
 			mws = append(mws, pluginManager.BuildHookMiddlewares()...)
+			mws = append(mws, pluginManager.BuildToolResultMiddlewares()...)
 		}
 		rootAgent.SetMiddlewares(mws)
 
