@@ -20,6 +20,7 @@ import (
 	"late/internal/client"
 	appconfig "late/internal/config"
 	"late/internal/mcp"
+	"late/internal/pathutil"
 	"late/internal/plugin"
 	"late/internal/session"
 	"late/internal/tool"
@@ -28,6 +29,36 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 )
+
+// pluginInlineTool adapts a plugin.InlineTool (defined in internal/plugin/tools.go)
+// into a common.Tool so the CLI's session registry can dispatch invocations to
+// plugin-declared runners. It exists because upstream repurposed
+// tool.ScriptTool for skill dispatch only; for arbitrary plugin-defined tools,
+// we wrap them here.
+//
+// The wrapper synthesizes a client.ToolCall from the executor's (args
+// json.RawMessage) payload by stitching in the registered name — args is
+// strictly the JSON parameters (e.g. {"path": "/foo"}) the model emitted;
+// the function name is provided by the registry at dispatch time, so we
+// surface the wrapped name rather than re-parse it from args.
+type pluginInlineTool struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
+	Runner      func(ctx context.Context, call client.ToolCall) (string, error)
+}
+
+func (p pluginInlineTool) Name() string        { return p.Name }
+func (p pluginInlineTool) Description() string { return p.Description }
+func (p pluginInlineTool) Parameters() json.RawMessage {
+	return p.Parameters
+}
+func (p pluginInlineTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	return p.Runner(ctx, client.ToolCall{
+		Type:     "function",
+		Function: client.FunctionCall{Name: p.Name, Arguments: string(args)},
+	})
+}
 
 func main() {
 	// Parse flags
@@ -244,7 +275,7 @@ func main() {
 				pluginManager = pm
 
 				// Register plugin skills into the skills directory
-				skillsDir, skillsErr := common.LateSkillsDir()
+				skillsDir, skillsErr := pathutil.LateSkillsDir()
 				if skillsErr == nil {
 					if err := pm.RegisterPluginSkills(skillsDir); err != nil {
 						fmt.Fprintf(os.Stderr, "Warning: failed to register plugin skills: %v\n", err)
@@ -368,10 +399,10 @@ func main() {
 			if !enabled {
 				continue
 			}
-			sess.Registry.Register(tool.ScriptTool{
-				ToolName:    t.Name,
+			sess.Registry.Register(pluginInlineTool{
+				Name:        t.Name,
 				Description: t.Description,
-				Parameters:  string(t.Parameters),
+				Parameters:  t.Parameters,
 				Runner:      t.Runner,
 			})
 		}
