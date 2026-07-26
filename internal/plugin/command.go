@@ -3,7 +3,6 @@ package plugin
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -191,7 +190,7 @@ func handlePluginRemove(pm *PluginManager, args []string) {
 		return
 	}
 
-	removed, err := RemovePlugin(pm, name, project)
+	_, err := RemovePlugin(pm, name, project)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to remove plugin: %v\n", err)
 		return

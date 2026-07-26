@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -232,9 +233,7 @@ func (pm *PluginManager) BuildHookMiddlewares() []common.ToolMiddleware {
 						return "", fmt.Errorf("tool call %q blocked by plugin %q", call.Function.Name, h.pluginName)
 					}
 					if out != "" && json.Valid([]byte(out)) {
-						// Mutate the call's arguments before next() runs.
-						// json.RawMessage is []byte, so convert the runHook string.
-						call.Function.Arguments = json.RawMessage([]byte(out))
+						call.Function.Arguments = out
 					}
 				}
 				return next(ctx, call)
