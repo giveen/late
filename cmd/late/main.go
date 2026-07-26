@@ -28,6 +28,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
+	"encoding/json"
 )
 
 // pluginInlineTool adapts a plugin.InlineTool (defined in internal/plugin/tools.go)
@@ -42,22 +43,26 @@ import (
 // the function name is provided by the registry at dispatch time, so we
 // surface the wrapped name rather than re-parse it from args.
 type pluginInlineTool struct {
-	Name        string
-	Description string
-	Parameters  json.RawMessage
-	Runner      func(ctx context.Context, call client.ToolCall) (string, error)
+	name        string
+	description string
+	parameters  json.RawMessage
+	runner      func(ctx context.Context, call client.ToolCall) (string, error)
 }
 
-func (p pluginInlineTool) Name() string        { return p.Name }
-func (p pluginInlineTool) Description() string { return p.Description }
-func (p pluginInlineTool) Parameters() json.RawMessage {
-	return p.Parameters
+func (p pluginInlineTool) Name() string                { return p.name }
+func (p pluginInlineTool) Description() string         { return p.description }
+func (p pluginInlineTool) Parameters() json.RawMessage { return p.parameters }
+func (p pluginInlineTool) RequiresConfirmation(args json.RawMessage) bool {
+	return false
 }
 func (p pluginInlineTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	return p.Runner(ctx, client.ToolCall{
+	return p.runner(ctx, client.ToolCall{
 		Type:     "function",
-		Function: client.FunctionCall{Name: p.Name, Arguments: string(args)},
+		Function: client.FunctionCall{Name: p.name, Arguments: string(args)},
 	})
+}
+func (p pluginInlineTool) CallString(args json.RawMessage) string {
+	return fmt.Sprintf("Calling plugin tool %q...", p.name)
 }
 
 func main() {
@@ -400,10 +405,10 @@ func main() {
 				continue
 			}
 			sess.Registry.Register(pluginInlineTool{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.Parameters,
-				Runner:      t.Runner,
+				name:        t.Name,
+				description: t.Description,
+				parameters:  t.Parameters,
+				runner:      t.Runner,
 			})
 		}
 	}
@@ -445,7 +450,9 @@ func main() {
 	// presses Enter.
 	if pluginManager != nil && pluginManager.Count() > 0 {
 		model.SetPluginCommands(pluginManager.PluginCommands())
-		model.MessageHook = pluginManager.HookedMessage
+		model.MessageHook = func(text string) string {
+			return pluginManager.HookedMessage(context.Background(), text)
+		}
 		model.CommandHandler = pluginManager.HandleCommand
 		model.SelectedTheme = themeID
 
