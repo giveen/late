@@ -246,24 +246,65 @@ func (pm *PluginManager) RegisterPluginSkills(skillsDir string) error {
 				continue
 			}
 
-			sk, loadErr := skill.LoadSkill(skillPath)
-			if loadErr != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "Warning: plugin %s has invalid skill at %s: %v\n", p.Name, skillPath, loadErr)
-				continue
+			// SKILL.md / subdirectory layout resolution:
+			//
+			// Plugins can declare either:
+			//   <plugin>/skills/SKILL.md                         (single file at root)
+			//   <plugin>/skills/<skillname>/SKILL.md             (one skill per subdir)
+			// We support both. The single-root-file case names the skill
+			// after the basename of the parent dir ("skills") so the
+			// namespaced identifier stays stable across minor plugin
+			// refactors.
+			var loaded []*skill.Skill
+
+			if _, err := os.Stat(filepath.Join(skillPath, "SKILL.md")); err == nil {
+				// Single-file layout at the root.
+				sk, loadErr := skill.LoadSkill(skillPath)
+				if loadErr != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "Warning: plugin %s has invalid skill at %s: %v\n", p.Name, skillPath, loadErr)
+					continue
+				}
+				loaded = append(loaded, sk)
+			} else {
+				// Subdir layout: enumerate one level of subdirectories,
+				// each expected to contain its own SKILL.md. This matches
+				// the documented Claude Code / Agent Skills convention.
+				entries, rerr := os.ReadDir(skillPath)
+				if rerr != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "Warning: plugin %s skill dir %s unreadable: %v\n", p.Name, skillPath, rerr)
+					continue
+				}
+				for _, e := range entries {
+					if !e.IsDir() {
+						continue
+					}
+					sub := filepath.Join(skillPath, e.Name())
+					if _, err := os.Stat(filepath.Join(sub, "SKILL.md")); err != nil {
+						continue
+					}
+					sk, loadErr := skill.LoadSkill(sub)
+					if loadErr != nil {
+						_, _ = fmt.Fprintf(os.Stderr, "Warning: plugin %s has invalid skill %s: %v\n", p.Name, sub, loadErr)
+						continue
+					}
+					loaded = append(loaded, sk)
+				}
 			}
 
-			// Namespace skill symlinks to prevent collisions between plugins
-			namespacedName := p.Name + ":" + sk.Metadata.Name
-			linkName := filepath.Join(skillsDir, namespacedName)
-			if _, err := os.Lstat(linkName); err == nil {
-				os.Remove(linkName)
-			}
+			for _, sk := range loaded {
+				// Namespace skill symlinks to prevent collisions between plugins
+				namespacedName := p.Name + ":" + sk.Metadata.Name
+				linkName := filepath.Join(skillsDir, namespacedName)
+				if _, err := os.Lstat(linkName); err == nil {
+					os.Remove(linkName)
+				}
 
-			if err := os.Symlink(skillPath, linkName); err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to create symlink for plugin skill %s: %v\n", namespacedName, err)
-				continue
+				if err := os.Symlink(sk.Path, linkName); err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to create symlink for plugin skill %s: %v\n", namespacedName, err)
+					continue
+				}
+				keep[namespacedName] = true
 			}
-			keep[namespacedName] = true
 		}
 	}
 
