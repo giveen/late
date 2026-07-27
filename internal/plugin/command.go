@@ -11,32 +11,87 @@ import (
 // HandlePluginCommand dispatches `late plugin <subcommand>` to the appropriate handler.
 // Returns true if the command was handled (caller should exit), false if the caller
 // should continue (e.g. the plugin manager needs to bootstrap first).
+//
+// Help handling: `-h`, `--help`, or `help` as the first arg prints
+// top-level usage; the same tokens anywhere in a subcommand's args
+// print the per-subcommand usage. This is critical because install's
+// implementation falls through to npm (which prints its own docs when
+// passed `--help`), and link's implementation tries to interpret
+// `--help` as a filesystem path and dies.
 func HandlePluginCommand(pm *PluginManager, args []string) bool {
 	if len(args) == 0 {
+		printPluginUsage()
+		return true
+	}
+	if isHelpToken(args[0]) {
 		printPluginUsage()
 		return true
 	}
 
 	switch args[0] {
 	case "list", "ls":
+		if hasHelpFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "Usage: late plugin list [--project]")
+			return true
+		}
 		handlePluginList(pm)
 		return true
 	case "install", "i":
+		if hasHelpFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "Usage: late plugin install [--project] <source>")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Install a plugin by source. Source may be:")
+			fmt.Fprintln(os.Stderr, "  - npm package:         @late/plugin-graph-rag, some-pkg")
+			fmt.Fprintln(os.Stderr, "  - git url:            https://github.com/user/repo.git")
+			fmt.Fprintln(os.Stderr, "  - shorthand git:      github:user/repo")
+			fmt.Fprintln(os.Stderr, "  - local filesystem:   ./my-plugin, /abs/path, ~/path")
+			fmt.Fprintln(os.Stderr, "  - bare name:          resolved via the marketplace; falls")
+			fmt.Fprintln(os.Stderr, "                        through to npm on miss.")
+			return true
+		}
 		handlePluginInstall(pm, args[1:])
 		return true
 	case "remove", "rm", "uninstall":
+		if hasHelpFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "Usage: late plugin remove [--project] <name>")
+			return true
+		}
 		handlePluginRemove(pm, args[1:])
 		return true
 	case "link":
+		if hasHelpFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "Usage: late plugin link [--project] <path>")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Link a local directory as a plugin (dev mode). The path")
+			fmt.Fprintln(os.Stderr, "must be an existing directory containing a native-Late")
+			fmt.Fprintln(os.Stderr, "(`late`-keyed package.json) or a Claude Code")
+			fmt.Fprintln(os.Stderr, "(.claude-plugin/plugin.json) plugin manifest.")
+			return true
+		}
 		handlePluginLink(pm, args[1:])
 		return true
 	case "update":
+		if hasHelpFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "Usage: late plugin update [<name>]")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Without a name, updates every installed npm/git plugin")
+			fmt.Fprintln(os.Stderr, "in place. With a name, updates that plugin only.")
+			return true
+		}
 		handlePluginUpdate(pm, args[1:])
 		return true
 	case "enable":
+		if hasHelpFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "Usage: late plugin enable <name>")
+			return true
+		}
 		handlePluginEnable(pm, args[1:], true)
 		return true
 	case "disable":
+		if hasHelpFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "Usage: late plugin disable <name>")
+			return true
+		}
 		handlePluginEnable(pm, args[1:], false)
 		return true
 	default:
@@ -44,6 +99,30 @@ func HandlePluginCommand(pm *PluginManager, args []string) bool {
 		printPluginUsage()
 		return true
 	}
+}
+
+// isHelpToken reports whether s is a help-style flag (-h, --help, or
+// the bare word "help", in any combination).
+func isHelpToken(s string) bool {
+	switch strings.ToLower(s) {
+	case "-h", "--help", "help":
+		return true
+	}
+	return false
+}
+
+// hasHelpFlag scans args for any help-style token and returns true on
+// the first match. Used by every per-subcommand branch of
+// HandlePluginCommand so that `late plugin install --help` (and any
+// positional variant: `--help` last, `--help` mid-args) prints usage
+// rather than being misinterpreted as a plugin source / path / name.
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if isHelpToken(a) {
+			return true
+		}
+	}
+	return false
 }
 
 func printPluginUsage() {
