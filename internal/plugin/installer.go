@@ -63,8 +63,11 @@ func InstallFromNpm(pm *PluginManager, pkgName string, projectLocal ...bool) (*I
 		os.Remove(linkDir)
 	}
 
-	// Use relative symlink for portability
-	rel, err := filepath.Rel(targetDir, npmDir)
+	// Use relative symlink for portability.
+	// The symlink resolves relative to its OWN parent directory, not the
+	// plugins root — for scoped packages (@scope/name) the link is nested
+	// one level deeper, so compute from linkDir's parent.
+	rel, err := filepath.Rel(filepath.Dir(linkDir), npmDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute relative path: %w", err)
 	}

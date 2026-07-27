@@ -113,14 +113,31 @@ func (pm *PluginManager) discoverFromDir(dir string) error {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		// Accept real directories AND symlinks (which may point to dirs).
+		// Go's os.ReadDir reports IsDir()=false for symlinks, so we
+		// must check the type explicitly.
+		if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
 			continue
 		}
-		if entry.Name() == "node_modules" || entry.Name() == ".cache" {
+		name := entry.Name()
+
+		// Skip npm-managed directories: node_modules and .cache.
+		if name == "node_modules" || name == ".cache" {
 			continue
 		}
 
-		pluginDir := filepath.Join(dir, entry.Name())
+		// @-prefixed directories are npm scoped-package parent dirs.
+		// They aren't plugins themselves — recurse into them to find
+		// the actual plugins (e.g. @scope/name).
+		if strings.HasPrefix(name, "@") {
+			subDir := filepath.Join(dir, name)
+			if err := pm.discoverFromDir(subDir); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to scan scoped dir %s: %v\n", subDir, err)
+			}
+			continue
+		}
+
+		pluginDir := filepath.Join(dir, name)
 		plugin, err := LoadPluginMeta(pluginDir)
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to load plugin from %s: %v\n", pluginDir, err)

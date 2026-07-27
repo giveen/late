@@ -63,6 +63,7 @@ func runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []b
 	// matches-lookup binary and avoids any three-index slicing (which is
 	// invalid for Go strings).
 	cmd := exec.CommandContext(execCtx, resolved, resolved)
+	setCmdSysProcAttr(cmd)
 	cmd.Dir = pluginDir
 
 	if len(stdin) > 0 {

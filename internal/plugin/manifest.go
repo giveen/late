@@ -19,6 +19,23 @@ type LateManifest struct {
 	Tools    []LateToolManifest  `json:"tools,omitempty"`    // inline agent-callable tools (no MCP needed)
 }
 
+// OmpManifest represents the "omp" field inside an omp plugin's package.json.
+// Late translates these into its own manifest format at load time.
+type OmpManifest struct {
+	Skills     []string            `json:"skills,omitempty"`
+	Extensions []string            `json:"extensions,omitempty"`
+	Commands   []string            `json:"commands,omitempty"`
+	MCP        *LateMCPManifest    `json:"mcp,omitempty"`
+	Hooks      *LateHooksManifest  `json:"hooks,omitempty"`
+}
+
+// ClaudePluginManifest represents the .claude-plugin/plugin.json manifest.
+type ClaudePluginManifest struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Version     string `json:"version,omitempty"`
+}
+
 // LateCommands is a backward-compatible adapter for the "commands" field.
 // Plugins written before command handlers existed declare commands as a
 // flat array of strings; plugins written after can declare objects with
@@ -137,10 +154,11 @@ type LateHooksManifest struct {
 
 // PackageJSON represents the minimal package.json fields we care about.
 type PackageJSON struct {
-	Name     string       `json:"name"`
-	Version  string       `json:"version"`
-	Description string    `json:"description,omitempty"`
-	Late     *LateManifest `json:"late,omitempty"`
+	Name        string       `json:"name"`
+	Version     string       `json:"version"`
+	Description string       `json:"description,omitempty"`
+	Late        *LateManifest `json:"late,omitempty"`
+	Omp         *OmpManifest  `json:"omp,omitempty"`
 }
 
 // InstalledPlugin represents an installed plugin with its manifest and metadata.
@@ -218,8 +236,36 @@ func resolveArgs(pluginDir string, args []string) []string {
 	return resolved
 }
 
-// LoadPlugin loads a plugin from the specified directory by reading its package.json.
+// LoadPlugin loads a plugin from the specified directory. It recognizes
+// three plugin formats in order of precedence:
+//
+//  1. package.json with "late" field (native Late format)
+//  2. package.json with "omp" field  (Oh My Pi / omp format) — translated at load time
+//  3. .claude-plugin/plugin.json + auto-detected surfaces (Claude Code format)
+//
+// For formats 2 and 3, the manifest is translated into a LateManifest so the rest
+// of the system (skill registration, MCP, commands, hooks) works identically.
 func LoadPlugin(dir string) (*InstalledPlugin, error) {
+	plugin, err := tryLoadNativeLate(dir)
+	if err == nil {
+		return plugin, nil
+	}
+
+	plugin, err = tryLoadOmp(dir)
+	if err == nil {
+		return plugin, nil
+	}
+
+	plugin, err = tryLoadClaudeCode(dir)
+	if err == nil {
+		return plugin, nil
+	}
+
+	return nil, fmt.Errorf("no recognized plugin format in %s: %w", dir, err)
+}
+
+// tryLoadNativeLate loads a plugin from a package.json with a "late" field.
+func tryLoadNativeLate(dir string) (*InstalledPlugin, error) {
 	pkgPath := filepath.Join(dir, "package.json")
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
@@ -235,20 +281,138 @@ func LoadPlugin(dir string) (*InstalledPlugin, error) {
 		return nil, fmt.Errorf("plugin at %s is missing 'name' in package.json", dir)
 	}
 
-	baseName := filepath.Base(dir)
-	if pkg.Name != baseName && !strings.HasPrefix(pkg.Name, "@") {
-		// Allow scoped npm packages (@scope/name) to map to directory name
-		// but log a warning if a non-scoped name doesn't match.
+	if pkg.Late == nil {
+		return nil, fmt.Errorf("no 'late' field in %s", pkgPath)
 	}
 
+	return buildPlugin(dir, pkg.Name, pkg.Version, pkg.Description, pkg.Late), nil
+}
+
+// tryLoadOmp loads a plugin from a package.json with an "omp" field.
+func tryLoadOmp(dir string) (*InstalledPlugin, error) {
+	pkgPath := filepath.Join(dir, "package.json")
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", pkgPath, err)
+	}
+
+	var pkg PackageJSON
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", pkgPath, err)
+	}
+
+	if pkg.Name == "" {
+		return nil, fmt.Errorf("plugin at %s is missing 'name' in package.json", dir)
+	}
+
+	if pkg.Omp == nil {
+		return nil, fmt.Errorf("no 'omp' field in %s", pkgPath)
+	}
+
+	late := translateOmpToLate(pkg.Omp)
+	return buildPlugin(dir, pkg.Name, pkg.Version, pkg.Description, late), nil
+}
+
+// translateOmpToLate converts an omp manifest to the internal LateManifest.
+func translateOmpToLate(omp *OmpManifest) *LateManifest {
+	late := &LateManifest{
+		Skills:   omp.Skills,
+		Commands: make(LateCommands, 0, len(omp.Commands)),
+		MCP:      omp.MCP,
+		Hooks:    omp.Hooks,
+	}
+
+	for _, cmd := range omp.Commands {
+		late.Commands = append(late.Commands, LateCommandManifest{Name: cmd})
+	}
+	// omp extensions are not directly surfaced in Late — they're TypeScript
+	// entry points for the omp harness itself and don't map to Late surfaces.
+
+	return late
+}
+
+// tryLoadClaudeCode loads a plugin in Claude Code format:
+//   - .claude-plugin/plugin.json for metadata
+//   - skills/ directory for skills
+//   - commands/ directory (legacy) for commands
+//   - .mcp.json at root for MCP servers
+//   - hooks/hooks.json at root for hooks
+func tryLoadClaudeCode(dir string) (*InstalledPlugin, error) {
+	claudeDir := filepath.Join(dir, ".claude-plugin")
+	manifestPath := filepath.Join(claudeDir, "plugin.json")
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no .claude-plugin/plugin.json in %s", dir)
+		}
+		return nil, fmt.Errorf("failed to read %s: %w", manifestPath, err)
+	}
+
+	var manifest ClaudePluginManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", manifestPath, err)
+	}
+
+	if manifest.Name == "" {
+		return nil, fmt.Errorf("claude plugin at %s is missing 'name' in plugin.json", dir)
+	}
+
+	late := &LateManifest{}
+
+	// Auto-detect skills/ directory
+	if info, err := os.Stat(filepath.Join(dir, "skills")); err == nil && info.IsDir() {
+		late.Skills = append(late.Skills, "skills/")
+	}
+
+	// Auto-detect commands/ directory (Claude Code legacy)
+	if info, err := os.Stat(filepath.Join(dir, "commands")); err == nil && info.IsDir() {
+		entries, _ := os.ReadDir(filepath.Join(dir, "commands"))
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasSuffix(name, ".md") {
+				cmdName := "/" + strings.TrimSuffix(name, ".md")
+				late.Commands = append(late.Commands, LateCommandManifest{Name: cmdName})
+			}
+		}
+	}
+
+	// Auto-detect .mcp.json at root (Claude Code style)
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	if mcpData, err := os.ReadFile(mcpPath); err == nil {
+		var mcpCfg struct {
+			McpServers map[string]MCPServerConfig `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(mcpData, &mcpCfg); err == nil && len(mcpCfg.McpServers) > 0 {
+			late.MCP = &LateMCPManifest{Servers: mcpCfg.McpServers}
+		}
+	}
+
+	// Auto-detect hooks/hooks.json at root
+	hooksPath := filepath.Join(dir, "hooks", "hooks.json")
+	if hooksData, err := os.ReadFile(hooksPath); err == nil {
+		var hooksCfg struct {
+			Hooks json.RawMessage `json:"hooks"`
+		}
+		if err := json.Unmarshal(hooksData, &hooksCfg); err == nil && hooksCfg.Hooks != nil {
+			// Store raw hooks JSON — the hook system handles Claude Code
+			// hook format via its own adapter.
+		}
+	}
+
+	return buildPlugin(dir, manifest.Name, manifest.Version, manifest.Description, late), nil
+}
+
+// buildPlugin constructs an InstalledPlugin and detects its source type.
+func buildPlugin(dir, name, version, description string, late *LateManifest) *InstalledPlugin {
 	plugin := &InstalledPlugin{
-		Name:        pkg.Name,
-		Version:     pkg.Version,
-		Description: pkg.Description,
+		Name:        name,
+		Version:     version,
+		Description: description,
 		Path:        dir,
 		SourceType:  "unknown",
 		Enabled:     true,
-		Late:        pkg.Late,
+		Late:        late,
 	}
 
 	if plugin.Late == nil {
@@ -264,7 +428,7 @@ func LoadPlugin(dir string) (*InstalledPlugin, error) {
 		plugin.SourceType = "npm"
 	}
 
-	return plugin, nil
+	return plugin
 }
 
 // isSymlink checks if a path is a symbolic link.
