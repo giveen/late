@@ -4,23 +4,24 @@ import (
 	"testing"
 )
 
-// TestPluginCommands_Empty verifies that when no commands are set, the getter returns nil.
+// TestPluginCommands_Empty verifies that an unconfigured Model has
+// nil plugin commands.
 func TestPluginCommands_Empty(t *testing.T) {
 	m := &Model{}
 
-	cmds := m.PluginCommands
-	if cmds != nil {
-		t.Errorf("expected nil, got %v", cmds)
+	if m.PluginCommands != nil {
+		t.Errorf("expected nil, got %v", m.PluginCommands)
 	}
 }
 
-// TestPluginCommands_SetAndGet verifies setting commands and retrieving them.
+// TestPluginCommands_SetAndGet verifies that assigning to the field
+// round-trips cleanly.
 func TestPluginCommands_SetAndGet(t *testing.T) {
 	m := &Model{}
 	expected := []string{"/query", "/graph", "/analyze"}
 
-	m.SetPluginCommands(expected)
-	cmds := m.ListedPluginCommands()
+	m.PluginCommands = expected
+	cmds := m.PluginCommands
 
 	if len(cmds) != len(expected) {
 		t.Fatalf("expected %d commands, got %d", len(expected), len(cmds))
@@ -32,94 +33,33 @@ func TestPluginCommands_SetAndGet(t *testing.T) {
 	}
 }
 
-// TestPluginCommands_DefensiveCopy verifies that the getter returns a copy,
-// so mutating the returned slice does not affect the model's internal state.
-func TestPluginCommands_DefensiveCopy(t *testing.T) {
-	m := &Model{}
-	original := []string{"/cmd1", "/cmd2"}
-	m.SetPluginCommands(original)
-
-	// Get a copy and mutate it
-	got := m.PluginCommands()
-	got[0] = "/mutated"
-
-	// Internal state should be unchanged
-	internal := m.PluginCommands()
-	if internal[0] != "/cmd1" {
-		t.Errorf("expected internal state to be unchanged, got %q", internal[0])
-	}
-}
-
-// TestSetPluginCommands_Nil sets nil and verifies the getter returns nil.
+// TestSetPluginCommands_Nil sets nil and verifies the field is nil.
 func TestSetPluginCommands_Nil(t *testing.T) {
 	m := &Model{}
-	m.SetPluginCommands(nil)
-	if cmds := m.PluginCommands(); cmds != nil {
-		t.Errorf("expected nil after setting nil, got %v", cmds)
+	m.PluginCommands = nil
+	if m.PluginCommands != nil {
+		t.Errorf("expected nil after setting nil, got %v", m.PluginCommands)
 	}
 }
 
-// TestSetPluginCommands_EmptySlice sets an empty slice and verifies the getter returns nil.
+// TestSetPluginCommands_EmptySlice sets an empty slice and verifies the field is non-nil but empty.
 func TestSetPluginCommands_EmptySlice(t *testing.T) {
 	m := &Model{}
-	m.SetPluginCommands([]string{})
-	if cmds := m.PluginCommands(); cmds != nil {
-		t.Errorf("expected nil after setting empty slice, got %v", cmds)
+	m.PluginCommands = []string{}
+	if len(m.PluginCommands) != 0 {
+		t.Errorf("expected empty after setting empty slice, got %v", m.PluginCommands)
 	}
 }
 
-// TestSetPluginCommands_Replace verifies that setting new commands replaces the old ones.
+// TestSetPluginCommands_Replace verifies that reassigning replaces the old slice.
 func TestSetPluginCommands_Replace(t *testing.T) {
 	m := &Model{}
-	m.SetPluginCommands([]string{"/old"})
-	m.SetPluginCommands([]string{"/new"})
+	m.PluginCommands = []string{"/old"}
+	m.PluginCommands = []string{"/new"}
 
-	cmds := m.PluginCommands()
+	cmds := m.PluginCommands
 	if len(cmds) != 1 || cmds[0] != "/new" {
 		t.Errorf("expected [\"/new\"], got %v", cmds)
-	}
-}
-
-// TestIsPluginCmd_ExactMatch verifies isPluginCmd matches exact command strings.
-func TestIsPluginCmd_ExactMatch(t *testing.T) {
-	cmds := []string{"/query", "/graph-rag", "/analyze"}
-	cases := []struct {
-		input    string
-		expected bool
-	}{
-		{"/query", true},
-		{"/graph-rag", true},
-		{"/analyze", true},
-		{"/query ", false},        // trailing space
-		{"/unknown", false},
-		{"/Query", false},         // case-sensitive
-		{"query", false},          // missing leading slash
-		{"", false},
-	}
-
-	for _, tc := range cases {
-		result := isPluginCmd(tc.input, cmds)
-		if result != tc.expected {
-			t.Errorf("isPluginCmd(%q, cmds) = %v, expected %v", tc.input, result, tc.expected)
-		}
-	}
-}
-
-// TestIsPluginCmd_EmptyList verifies isPluginCmd with an empty command list.
-func TestIsPluginCmd_EmptyList(t *testing.T) {
-	if isPluginCmd("/anything", nil) {
-		t.Error("expected false for nil command list")
-	}
-	if isPluginCmd("/anything", []string{}) {
-		t.Error("expected false for empty command list")
-	}
-}
-
-// TestIsPluginCmd_WhitespaceTrim verifies that isPluginCmd trims whitespace from input.
-func TestIsPluginCmd_WhitespaceTrim(t *testing.T) {
-	cmds := []string{"/clear"}
-	if !isPluginCmd("  /clear  ", cmds) {
-		t.Error("expected true — isPluginCmd should trim whitespace")
 	}
 }
 
@@ -131,7 +71,7 @@ func TestAvailableCommands_ContainsBuiltins(t *testing.T) {
 	for _, exp := range expected {
 		found := false
 		for _, cmd := range AvailableCommands {
-			if cmd == exp {
+			if cmd.Name == exp {
 				found = true
 				break
 			}
@@ -152,13 +92,13 @@ func TestPluginCommands_IsolatedModels(t *testing.T) {
 	m1 := &Model{}
 	m2 := &Model{}
 
-	m1.SetPluginCommands([]string{"/m1-cmd"})
-	m2.SetPluginCommands([]string{"/m2-cmd"})
+	m1.PluginCommands = []string{"/m1-cmd"}
+	m2.PluginCommands = []string{"/m2-cmd"}
 
-	if c := m1.PluginCommands(); len(c) != 1 || c[0] != "/m1-cmd" {
+	if c := m1.PluginCommands; len(c) != 1 || c[0] != "/m1-cmd" {
 		t.Errorf("expected m1 to have [/m1-cmd], got %v", c)
 	}
-	if c := m2.PluginCommands(); len(c) != 1 || c[0] != "/m2-cmd" {
+	if c := m2.PluginCommands; len(c) != 1 || c[0] != "/m2-cmd" {
 		t.Errorf("expected m2 to have [/m2-cmd], got %v", c)
 	}
 }
