@@ -5,20 +5,26 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-)
-
-// writeTestPlugin creates a minimal plugin directory with a package.json
-// at the given path and returns the directory.
-func writeTestPlugin(t *testing.T, dir, name string) string {
+)// writeBarePlugin creates a minimal plugin directory with a native-Late
+// package.json at the given path and returns the directory. It is
+// intentionally a different name from the rich
+// `writeMinimalPluginManifest` helper that drives plugin-update tests;
+// this helper is for project-dir routing tests that don't need a
+// manifest round-trip. The `"late": {}` block is required so LoadPlugin
+// recognizes the directory as a valid native-Late plugin; without it,
+// the loader fails with "no recognized plugin format" because the
+// package.json has no `late`, `omp`, or `.claude-plugin/plugin.json`.
+func writeBarePlugin(t *testing.T, dir, name string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("failed to create plugin dir %s: %v", dir, err)
 	}
 	pkg := `{
-		"name": "` + name + `",
-		"version": "1.0.0",
-		"description": "Test plugin ` + name + `"
-	}`
+	"name": "` + name + `",
+	"version": "1.0.0",
+	"description": "Test plugin ` + name + `",
+	"late": {}
+}`
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
 		t.Fatalf("failed to write package.json: %v", err)
 	}
@@ -80,8 +86,8 @@ func TestPluginManager_TargetDir(t *testing.T) {
 
 func TestDiscover_GlobalOnly(t *testing.T) {
 	globalDir := t.TempDir()
-	writeTestPlugin(t, filepath.Join(globalDir, "global-one"), "global-one")
-	writeTestPlugin(t, filepath.Join(globalDir, "global-two"), "global-two")
+	writeBarePlugin(t, filepath.Join(globalDir, "global-one"), "global-one")
+	writeBarePlugin(t, filepath.Join(globalDir, "global-two"), "global-two")
 
 	pm := NewPluginManager(globalDir)
 	if err := pm.Discover(); err != nil {
@@ -102,7 +108,7 @@ func TestDiscover_GlobalOnly(t *testing.T) {
 func TestDiscover_ProjectOnly(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
-	writeTestPlugin(t, filepath.Join(projectDir, "proj-one"), "proj-one")
+	writeBarePlugin(t, filepath.Join(projectDir, "proj-one"), "proj-one")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -121,9 +127,9 @@ func TestDiscover_ProjectOnly(t *testing.T) {
 func TestDiscover_BothDirectories(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
-	writeTestPlugin(t, filepath.Join(globalDir, "global-a"), "global-a")
-	writeTestPlugin(t, filepath.Join(globalDir, "global-b"), "global-b")
-	writeTestPlugin(t, filepath.Join(projectDir, "project-a"), "project-a")
+	writeBarePlugin(t, filepath.Join(globalDir, "global-a"), "global-a")
+	writeBarePlugin(t, filepath.Join(globalDir, "global-b"), "global-b")
+	writeBarePlugin(t, filepath.Join(projectDir, "project-a"), "project-a")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -151,13 +157,13 @@ func TestDiscover_ProjectOverridesGlobal(t *testing.T) {
 
 	// Same plugin name in both dirs, different versions
 	globalPluginDir := filepath.Join(globalDir, "my-plugin")
-	writeTestPlugin(t, globalPluginDir, "my-plugin")
+	writeBarePlugin(t, globalPluginDir, "my-plugin")
 	// Write a version 2.0.0 to the project dir
 	projPluginDir := filepath.Join(projectDir, "my-plugin")
 	if err := os.MkdirAll(projPluginDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	projPkg := `{"name": "my-plugin", "version": "2.0.0", "description": "Project-local override"}`
+	projPkg := `{"name": "my-plugin", "version": "2.0.0", "description": "Project-local override", "late": {}}`
 	if err := os.WriteFile(filepath.Join(projPluginDir, "package.json"), []byte(projPkg), 0644); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
@@ -182,7 +188,7 @@ func TestDiscover_ProjectOverridesGlobal(t *testing.T) {
 
 func TestDiscover_IgnoresNodeModulesAndCache(t *testing.T) {
 	globalDir := t.TempDir()
-	writeTestPlugin(t, filepath.Join(globalDir, "real-plugin"), "real-plugin")
+	writeBarePlugin(t, filepath.Join(globalDir, "real-plugin"), "real-plugin")
 	os.MkdirAll(filepath.Join(globalDir, "node_modules", "some-pkg"), 0755)
 	os.MkdirAll(filepath.Join(globalDir, ".cache", "stuff"), 0755)
 
@@ -204,7 +210,7 @@ func TestInstallFromLocal_Project(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
-	writeTestPlugin(t, sourceDir, "test-plugin")
+	writeBarePlugin(t, sourceDir, "test-plugin")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -241,7 +247,7 @@ func TestInstallFromLocal_Global(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
-	writeTestPlugin(t, sourceDir, "test-plugin")
+	writeBarePlugin(t, sourceDir, "test-plugin")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -265,7 +271,7 @@ func TestLink_Project(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
-	writeTestPlugin(t, sourceDir, "linked-plugin")
+	writeBarePlugin(t, sourceDir, "linked-plugin")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -285,7 +291,7 @@ func TestLink_Global(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
-	writeTestPlugin(t, sourceDir, "linked-plugin")
+	writeBarePlugin(t, sourceDir, "linked-plugin")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -309,7 +315,7 @@ func TestRemovePlugin_Project(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
-	writeTestPlugin(t, sourceDir, "removable")
+	writeBarePlugin(t, sourceDir, "removable")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -345,7 +351,7 @@ func TestRemovePlugin_Global(t *testing.T) {
 	globalDir := t.TempDir()
 	projectDir := t.TempDir()
 	sourceDir := t.TempDir()
-	writeTestPlugin(t, sourceDir, "removable")
+	writeBarePlugin(t, sourceDir, "removable")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -439,9 +445,9 @@ func TestParseProjectFlag(t *testing.T) {
 			wantRest: "some-source",
 		},
 		{
-			name:     "source then --project (order shouldn't matter for parseProjectFlag)",
+			name:     "source then --project (parser scans all args)",
 			args:     []string{"some-source", "--project"},
-			wantProj: false, // --project is not first; our parser looks at all args
+			wantProj: true, // parseProjectFlag scans every arg for the flags, regardless of position
 			wantRest: "some-source",
 		},
 		{
@@ -510,8 +516,8 @@ func TestTakeSnapshot_MultipleDirs(t *testing.T) {
 	projectDir := t.TempDir()
 
 	// Create one plugin in global, one in project
-	writeTestPlugin(t, filepath.Join(globalDir, "global-pkg"), "global-pkg")
-	writeTestPlugin(t, filepath.Join(projectDir, "project-pkg"), "project-pkg")
+	writeBarePlugin(t, filepath.Join(globalDir, "global-pkg"), "global-pkg")
+	writeBarePlugin(t, filepath.Join(projectDir, "project-pkg"), "project-pkg")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -555,8 +561,8 @@ func TestTakeSnapshot_ProjectPluginOverrides(t *testing.T) {
 	projectDir := t.TempDir()
 
 	// Same plugin name in both dirs
-	writeTestPlugin(t, filepath.Join(globalDir, "shared-pkg"), "shared-pkg")
-	writeTestPlugin(t, filepath.Join(projectDir, "shared-pkg"), "shared-pkg")
+	writeBarePlugin(t, filepath.Join(globalDir, "shared-pkg"), "shared-pkg")
+	writeBarePlugin(t, filepath.Join(projectDir, "shared-pkg"), "shared-pkg")
 
 	pm := NewPluginManager(globalDir)
 	pm.SetProjectDir(projectDir)
@@ -574,8 +580,8 @@ func TestTakeSnapshot_WithAddedWatchDir(t *testing.T) {
 	globalDir := t.TempDir()
 	extraDir := t.TempDir()
 
-	writeTestPlugin(t, filepath.Join(globalDir, "global-pkg"), "global-pkg")
-	writeTestPlugin(t, filepath.Join(extraDir, "extra-pkg"), "extra-pkg")
+	writeBarePlugin(t, filepath.Join(globalDir, "global-pkg"), "global-pkg")
+	writeBarePlugin(t, filepath.Join(extraDir, "extra-pkg"), "extra-pkg")
 
 	pm := NewPluginManager(globalDir)
 	w := NewPollingWatcher(pm)

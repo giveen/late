@@ -25,7 +25,7 @@ func TestDiscover_ConcurrentReadsDontPanic(t *testing.T) {
 	if err := os.MkdirAll(pluginDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	pkg := `{"name": "concurrent-plugin", "version": "1.0.0"}`
+	pkg := `{"name": "concurrent-plugin", "version": "1.0.0", "late": {}}`
 	if err := os.WriteFile(filepath.Join(pluginDir, "package.json"), []byte(pkg), 0644); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
@@ -474,7 +474,10 @@ func mkPlugin(t *testing.T, dir, name string) {
 	if err := os.MkdirAll(pdir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	pkg := `{"name":"` + name + `","version":"1.0.0"}`
+	// `"late": {}` is required so LoadPlugin accepts this directory as a
+	// valid native-Late plugin. Without it, every discover/install test in
+	// this package fails with `no recognized plugin format in <dir>`.
+	pkg := `{"name":"` + name + `","version":"1.0.0","late":{}}`
 	if err := os.WriteFile(filepath.Join(pdir, "package.json"), []byte(pkg), 0644); err != nil {
 		t.Fatalf("write: %v", err)
 	}

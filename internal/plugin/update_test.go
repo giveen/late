@@ -16,18 +16,11 @@ import (
 // withExecSeams swaps runCommand / runCommandOutput with capturing stubs and
 // returns a function that yields the recorded (name, args) invocations. The
 // returned cleanup restores the production seams.
-func withExecSeams(t *testing.T) (recorded func() []recordedExec, cleanup func()) {
+func withExecSeams(t *testing.T) (rec func() []recordedExec, cleanup func()) {
 	t.Helper()
 	origRun := runCommand
 	origOut := runCommandOutput
 
-	type entry struct {
-		name string
-		args []string
-		// For runCommandOutput we also store the bytes that flowed through.
-		out []byte
-		err error
-	}
 	var (
 		mu      sync.Mutex
 		logRun  []recordedExec
@@ -55,14 +48,14 @@ func withExecSeams(t *testing.T) (recorded func() []recordedExec, cleanup func()
 		runCommand = origRun
 		runCommandOutput = origOut
 	}
-	recorded = func() []recordedExec {
+	rec = func() []recordedExec {
 		mu.Lock()
 		defer mu.Unlock()
 		merged := append([]recordedExec(nil), logRun...)
 		merged = append(merged, logOut...)
 		return merged
 	}
-	return recorded, cleanup
+	return rec, cleanup
 }
 
 type recordedExec struct {
@@ -130,10 +123,7 @@ func TestUpdateNpmHappyPath(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	pm, err := NewPluginManager(pluginsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewPluginManager: %v", err)
-	}
+	pm := NewPluginManager(pluginsDir)
 	if err := pm.Discover(); err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -190,10 +180,7 @@ func TestUpdateLocalRefuses(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	pm, err := NewPluginManager(pluginsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewPluginManager: %v", err)
-	}
+	pm := NewPluginManager(pluginsDir)
 	if err := pm.Discover(); err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -220,10 +207,7 @@ func TestUpdateUnknownName(t *testing.T) {
 	rec, cleanup := withExecSeams(t)
 	defer cleanup()
 
-	pm, err := NewPluginManager(pluginsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewPluginManager: %v", err)
-	}
+	pm := NewPluginManager(pluginsDir)
 
 	if _, err := Update(pm, "nope", nil); err == nil {
 		t.Fatalf("expected Update on unknown plugin to error")
@@ -267,10 +251,7 @@ func TestUpdatePropagatesExecError(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	pm, err := NewPluginManager(pluginsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewPluginManager: %v", err)
-	}
+	pm := NewPluginManager(pluginsDir)
 	if err := pm.Discover(); err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -290,7 +271,7 @@ func TestUpdateAllIteratesAndSkipsLocal(t *testing.T) {
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	rec, cleanup := withExecSeams(t)
+	_, cleanup := withExecSeams(t)
 	defer cleanup()
 
 	// Two npm-shape plugins and one local devlink.
@@ -311,10 +292,7 @@ func TestUpdateAllIteratesAndSkipsLocal(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	pm, err := NewPluginManager(pluginsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewPluginManager: %v", err)
-	}
+	pm := NewPluginManager(pluginsDir)
 	if err := pm.Discover(); err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -360,7 +338,7 @@ func TestInstallDispatcherMarketplaceFallback(t *testing.T) {
 
 	// Marketplace always 404s.
 	srv := stubMarketplace(t, nil) // empty store → every name misses
-	mc := &MarketplaceClient{BaseURL: srv.URL, HTTPClient: srv.Client(), Timeout: 2 * time.Second}
+	mc := &MarketplaceClient{BaseURL: srv.URL, HTTPClient: srv.Client()}
 
 	// Override npm exec: it would fail because there's no @late/scoped-pkg.
 	// We only need to assert Install attempted npm after the 404 fall-through,
@@ -374,10 +352,7 @@ func TestInstallDispatcherMarketplaceFallback(t *testing.T) {
 		return errors.New("npm not configured in test")
 	}
 
-	pm, err := NewPluginManager(pluginsDir, "", nil)
-	if err != nil {
-		t.Fatalf("NewPluginManager: %v", err)
-	}
+	pm := NewPluginManager(pluginsDir)
 
 	// Capture stderr from Install's fmt.Fprintf "marketplace did not match..."
 	// by redirecting os.Stderr.

@@ -29,7 +29,8 @@ func writeExecutableShell(t *testing.T, path, body string) {
 	}
 }
 
-// helper: write a fake plugin into a temp dir
+// helper: write a fake plugin into a temp dir (the rich, namespaced
+// helper used across plugin tests).
 func writeTestPlugin(t *testing.T, parentDir, name string, manifest *LateManifest) *InstalledPlugin {
 	t.Helper()
 	pluginDir := filepath.Join(parentDir, name)
@@ -81,10 +82,7 @@ func TestBuildToolResultMiddlewares_PostExecMutate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pm, err := NewPluginManager(pluginsDir, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pm := NewPluginManager(pluginsDir)
 	if err := pm.Discover(); err != nil {
 		t.Fatal(err)
 	}
@@ -123,10 +121,7 @@ func TestBuildToolResultMiddlewares_PostExecMutate(t *testing.T) {
 // TestBuildToolResultMiddlewares_SkipOnError: if the inner runner returns
 // an error, the middleware does NOT call onToolResult hooks.
 func TestBuildToolResultMiddlewares_SkipOnError(t *testing.T) {
-	pm, err := NewPluginManager(t.TempDir(), "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pm := NewPluginManager(t.TempDir())
 	mws := pm.BuildToolResultMiddlewares()
 	if len(mws) != 1 {
 		t.Fatalf("expected 1 middleware, got %d", len(mws))
@@ -136,7 +131,7 @@ func TestBuildToolResultMiddlewares_SkipOnError(t *testing.T) {
 		return "", os.ErrNotExist
 	}
 	wrapped := mws[0](inner)
-	_, err = wrapped(context.Background(), client.ToolCall{
+	_, err := wrapped(context.Background(), client.ToolCall{
 		Function: client.FunctionCall{Name: "failer"},
 	})
 	if err == nil {
@@ -283,55 +278,9 @@ func TestCallOnSessionStartHooks_NoPanicOnEmpty(t *testing.T) {
 	pm.CallOnSessionStartHooks()
 }
 
-// 10. Theme resolve: empty/id reflection
-func TestResolveRenderTheme_EmptyReturnsBase(t *testing.T) {
-	got, err := ResolveRenderTheme("", nil, nil)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if string(got) != string(LateTheme) {
-		t.Fatal("expected base theme when override is nil")
-	}
-}
-
-// 11. Theme resolve: merges top-level glamour keys
-func TestResolveRenderTheme_MergesGlamourKeys(t *testing.T) {
-	mod := map[string]any{
-		"document": map[string]any{
-			"color": "#FF0000",
-		},
-	}
-	got, err := ResolveRenderTheme("p:red", mod, nil)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	s := string(got)
-	if !strings.Contains(s, "#FF0000") {
-		t.Fatal("expected merged colour in output")
-	}
-	if !strings.Contains(s, "_late_theme_name") {
-		t.Fatal("expected theme name marker in output")
-	}
-}
-
-// 12. Theme resolve: palette appended under _late_palette
-func TestResolveRenderTheme_PaletteAttached(t *testing.T) {
-	palette := map[string]string{
-		"bg":     "#000000",
-		"accent": "#E5A85C",
-	}
-	got, err := ResolveRenderTheme("plugin:ocean", nil, palette)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	s := string(got)
-	if !strings.Contains(s, "_late_palette") {
-		t.Fatal("expected _late_palette marker")
-	}
-	if !strings.Contains(s, "E5A85C") {
-		t.Fatal("expected palette colour in output")
-	}
-}
+// NOTE: Tests for ResolveRenderTheme and LateTheme live in
+// internal/tui/theme_test.go since the helper lives in the tui
+// package. Putting them here would create a circular import.
 
 // 13. Theme path resolution: rejects traversal
 func TestResolveThemePath_RejectsTraversal(t *testing.T) {
