@@ -48,15 +48,21 @@ const (
 	AppPadding      = 0
 )
 
+// CommandDef defines a slash command and its description.
+type CommandDef struct {
+	Name        string
+	Description string
+}
+
 // AvailableCommands lists all slash commands available in the TUI.
-var AvailableCommands = []string{
-	"/clear",
-	"/compose",
-	"/help",
-	"/log",
-	"/quit",
-	"/rewind",
-	"/themes",
+var AvailableCommands = []CommandDef{
+	{Name: "/clear", Description: "Clear the terminal screen"},
+	{Name: "/compose", Description: "Compose a message with an editor"},
+	{Name: "/help", Description: "Show help and shortcuts"},
+	{Name: "/log", Description: "View git commit log"},
+	{Name: "/quit", Description: "Exit the application"},
+	{Name: "/rewind", Description: "Rewind conversation history"},
+	{Name: "/themes", Description: "List and switch themes"},
 }
 
 // ThemeEntry is a TUI-side view of a plugin-provided theme. It contains
@@ -185,7 +191,7 @@ type Model struct {
 
 	// Slash-command autocomplete
 	ShowAutocomplete  bool
-	AutocompleteItems []string
+	AutocompleteItems []CommandDef
 	AutocompleteIndex int
 
 	// Plugin-provided slash commands (registered at startup from plugins)
