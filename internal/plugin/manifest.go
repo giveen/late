@@ -377,14 +377,33 @@ func tryLoadClaudeCode(dir string) (*InstalledPlugin, error) {
 		}
 	}
 
-	// Auto-detect .mcp.json at root (Claude Code style)
+	// Auto-detect .mcp.json at root (Claude Code style).
+	// Two formats exist in the wild:
+	//   {"mcpServers": {"name": {...}}}   — wrapped (omp/Late convention)
+	//   {"name": {"type":"sse","url":...}} — flat map (Claude Code convention)
 	mcpPath := filepath.Join(dir, ".mcp.json")
 	if mcpData, err := os.ReadFile(mcpPath); err == nil {
-		var mcpCfg struct {
+		// Try wrapped format first
+		var wrapped struct {
 			McpServers map[string]MCPServerConfig `json:"mcpServers"`
 		}
-		if err := json.Unmarshal(mcpData, &mcpCfg); err == nil && len(mcpCfg.McpServers) > 0 {
-			late.MCP = &LateMCPManifest{Servers: mcpCfg.McpServers}
+		if err := json.Unmarshal(mcpData, &wrapped); err == nil && len(wrapped.McpServers) > 0 {
+			late.MCP = &LateMCPManifest{Servers: wrapped.McpServers}
+		} else {
+			// Try flat format: top-level keys are server names
+			var flat map[string]json.RawMessage
+			if err := json.Unmarshal(mcpData, &flat); err == nil && len(flat) > 0 {
+				servers := make(map[string]MCPServerConfig, len(flat))
+				for name, raw := range flat {
+					var srv MCPServerConfig
+					if err := json.Unmarshal(raw, &srv); err == nil {
+						servers[name] = srv
+					}
+				}
+				if len(servers) > 0 {
+					late.MCP = &LateMCPManifest{Servers: servers}
+				}
+			}
 		}
 	}
 
