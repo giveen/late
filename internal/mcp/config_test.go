@@ -109,8 +109,8 @@ func TestExpandServerEnvVars_AllFields(t *testing.T) {
 	if server.URL != "https://api.example.com/v1" {
 		t.Errorf("expected URL 'https://api.example.com/v1', got %q", server.URL)
 	}
-	if len(server.Args) != 2 || server.Args[0] != "server.js" || server.Args[1] != "--port" {
-		t.Errorf("expected Args ['server.js', '--port'], got %v", server.Args)
+	if len(server.Args) != 3 || server.Args[0] != "server.js" || server.Args[1] != "--port" || server.Args[2] != "8080" {
+		t.Errorf("expected Args ['server.js', '--port', '8080'], got %v", server.Args)
 	}
 	if server.Env["API_KEY"] != "key-123" {
 		t.Errorf("expected Env[API_KEY] = 'key-123', got %q", server.Env["API_KEY"])

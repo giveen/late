@@ -46,23 +46,47 @@ type ClaudePluginManifest struct {
 //	"commands": [{"name": "/weather", "handler": "scripts/weather.sh"}]
 type LateCommands []LateCommandManifest
 
-// UnmarshalJSON accepts either an array of strings or an array of objects.
-// On parse failure for both shapes the error is returned verbatim.
+// UnmarshalJSON accepts commands arrays in three shapes, including the
+// heterogeneous case documented in `docs/plugin-example.md` where one
+// entry is a bare string ("legacy" slash command — dispatcher falls
+// back to plain-prompt) and another carries an explicit Handler
+// script:
+//
+//	"commands": ["/format", "/lint"]                           // strings only
+//	"commands": [{"name":"/lint","handler":"x.sh"}]            // objects only
+//	"commands": ["/format", {"name":"/lint","handler":"x.sh"}]  // mixed (preserved)
+//
+// Each element is dispatched individually: a string becomes a manifest
+// with Handler=="" (legacy fall-through); an object becomes a manifest
+// with whatever fields it carries. Anything that is neither is reported
+// verbatim so authors notice malformed entries.
+//
+// Heterogeneous arrays are common in real plugins (a plugin author
+// wants a `/help`-style bare alias for one command and a scripted
+// handler for another), so handling them here removes a long-standing
+// loader footgun.
 func (lc *LateCommands) UnmarshalJSON(data []byte) error {
-	var stringForms []string
-	if err := json.Unmarshal(data, &stringForms); err == nil {
-		out := make(LateCommands, 0, len(stringForms))
-		for _, s := range stringForms {
-			out = append(out, LateCommandManifest{Name: s})
-		}
-		*lc = out
-		return nil
-	}
-	var objForms []LateCommandManifest
-	if err := json.Unmarshal(data, &objForms); err != nil {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(data, &raws); err != nil {
 		return err
 	}
-	*lc = objForms
+	out := make(LateCommands, 0, len(raws))
+	for _, raw := range raws {
+		// Try string form first.
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			out = append(out, LateCommandManifest{Name: s})
+			continue
+		}
+		// Then object form.
+		var obj LateCommandManifest
+		if err := json.Unmarshal(raw, &obj); err == nil {
+			out = append(out, obj)
+			continue
+		}
+		return fmt.Errorf("commands entry must be a string or {name,handler?}, got %s", string(raw))
+	}
+	*lc = out
 	return nil
 }
 
@@ -121,6 +145,10 @@ type MCPServerConfig struct {
 	URL           string            `json:"url,omitempty"`
 	TransportType string            `json:"transportType,omitempty"`
 	Disabled      bool              `json:"disabled,omitempty"`
+	// Dir is populated by the plugin loader (not serialized) and is used
+	// to set cmd.Dir for the stdio transport so any plugin-relative
+	// paths in Args resolve against the plugin's directory.
+	Dir string `json:"-"`
 }
 
 // LateHooksManifest defines hook scripts a plugin provides.
@@ -203,6 +231,7 @@ func (p *InstalledPlugin) ResolveSurfaces() *SurfaceSources {
 			// Prefix server name with plugin name to avoid collisions
 			namespaced := p.Name + ":" + name
 			srv.Args = resolveArgs(p.Path, srv.Args)
+			srv.Dir = p.Path
 			src.MCPServers[namespaced] = srv
 		}
 	}
@@ -224,14 +253,33 @@ func (p *InstalledPlugin) ResolveSurfaces() *SurfaceSources {
 }
 
 // resolveArgs resolves relative paths in args to absolute paths rooted at pluginDir.
+//
+// The intent is that a plugin author can write either:
+//   - "args": ["./scripts/server.sh"]    (explicit ./ — resolved against pluginDir)
+//   - "args": ["../shared/server.sh"]    (explicit ../ — resolved against pluginDir)
+//   - "args": ["/abs/path/to/server.sh"] (absolute, pass-through)
+//   - "args": ["node", "src/index.js"]   (literal args, pass-through)
+//
+// Only args with an explicit relative prefix (`./` or `../`) are
+// resolved. Bare names are NOT rewritten — even when a same-named
+// file exists under pluginDir — because doing so silently changes
+// argv semantics for the spawned process and surprises authors who
+// pass positional args with cwd-relative intent. The transport
+// already sets `cmd.Dir` to pluginDir, so plugin authors can rely on
+// the kernel's classic "argv is what you wrote" behaviour when they
+// want cwd-relative scripts.
 func resolveArgs(pluginDir string, args []string) []string {
 	resolved := make([]string, len(args))
 	for i, arg := range args {
+		if arg == "" || strings.HasPrefix(arg, "/") {
+			resolved[i] = arg
+			continue
+		}
 		if strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, "../") {
 			resolved[i] = filepath.Join(pluginDir, arg)
-		} else {
-			resolved[i] = arg
+			continue
 		}
+		resolved[i] = arg
 	}
 	return resolved
 }

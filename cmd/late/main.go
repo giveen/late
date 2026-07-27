@@ -294,16 +294,17 @@ func main() {
 				}
 				if len(pluginMCP) > 0 && config != nil {
 					fmt.Println("Connecting to plugin MCP servers...")
-					for name, srv := range pluginMCP {
-						config.McpServers[name] = mcp.MCPServer{
-							Command:       srv.Command,
-							Args:          srv.Args,
-							Env:           srv.Env,
-							URL:           srv.URL,
-							TransportType: srv.TransportType,
-							Disabled:      srv.Disabled,
-						}
+				for name, srv := range pluginMCP {
+					config.McpServers[name] = mcp.MCPServer{
+						Command:       srv.Command,
+						Args:          srv.Args,
+						Env:           srv.Env,
+						URL:           srv.URL,
+						TransportType: srv.TransportType,
+						Disabled:      srv.Disabled,
+						Dir:           srv.Dir,
 					}
+				}
 					if err := mcpClient.ConnectFromConfig(context.Background(), config); err != nil {
 						fmt.Fprintf(os.Stderr, "Warning: Failed to connect to plugin MCP servers: %v\n", err)
 					}
