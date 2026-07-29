@@ -648,3 +648,243 @@ func TestPluginPathInDir(t *testing.T) {
 		t.Errorf("PluginPathInDir = %s, want %s", got, expected2)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// orphan @scope parent cleanup
+// ---------------------------------------------------------------------------
+
+// writeScopedPluginLike creates a plugin manifest whose `name` field uses
+// the `@scope/pkg` shape that InstallFromLocal writes to the plugins store
+// at `<pluginsdir>/@scope/pkg`, so we can drive the orphan-parent cleanup
+// path in removeFromDir.
+func writeScopedPluginLike(t *testing.T, dir, scopedName string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	pkg := `{"name": "` + scopedName + `", "version": "0.1.0", "description": "scoped test", "late": {}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	return dir
+}
+
+func TestRemovePlugin_ScopedLink_CleansEmptyScopeParent(t *testing.T) {
+	globalDir := t.TempDir()
+	sourceDir := t.TempDir()
+	writeScopedPluginLike(t, sourceDir, "@late/scoped-plugin")
+
+	pm := NewPluginManager(globalDir)
+	if _, err := InstallFromLocal(pm, sourceDir); err != nil {
+		t.Fatalf("InstallFromLocal failed: %v", err)
+	}
+
+	// Install must have created the @late parent dir (symlink lives at
+	// `<globalDir>/@late/scoped-plugin`).
+	scopeParent := filepath.Join(globalDir, "@late")
+	if _, err := os.Stat(scopeParent); err != nil {
+		t.Fatalf("expected @late parent %s after scoped install: %v", scopeParent, err)
+	}
+
+	if _, err := RemovePlugin(pm, "@late/scoped-plugin"); err != nil {
+		t.Fatalf("RemovePlugin failed: %v", err)
+	}
+
+	// The orphan @late dir must NOT survive after a successful remove.
+	if _, err := os.Stat(scopeParent); !os.IsNotExist(err) {
+		t.Errorf("expected orphan @late parent %s to be cleaned, but it still exists (err=%v)", scopeParent, err)
+	}
+}
+
+func TestRemovePlugin_ScopedLink_KeepsNonEmptyScopeParent(t *testing.T) {
+	globalDir := t.TempDir()
+	srcA := t.TempDir()
+	srcB := t.TempDir()
+	writeScopedPluginLike(t, srcA, "@late/scope-a")
+	writeScopedPluginLike(t, srcB, "@late/scope-b")
+
+	pm := NewPluginManager(globalDir)
+	if _, err := InstallFromLocal(pm, srcA); err != nil {
+		t.Fatalf("install A: %v", err)
+	}
+	if _, err := InstallFromLocal(pm, srcB); err != nil {
+		t.Fatalf("install B: %v", err)
+	}
+
+	scopeParent := filepath.Join(globalDir, "@late")
+	if entries, _ := os.ReadDir(scopeParent); len(entries) != 2 {
+		t.Fatalf("expected 2 entries under @late before remove, got %d", len(entries))
+	}
+
+	if _, err := RemovePlugin(pm, "@late/scope-a"); err != nil {
+		t.Fatalf("RemovePlugin failed: %v", err)
+	}
+
+	// @late must still exist because scope-b is a sibling.
+	if _, err := os.Stat(scopeParent); err != nil {
+		t.Errorf("expected non-empty @late parent to survive (has scope-b): err=%v", err)
+	}
+	if entries, _ := os.ReadDir(scopeParent); len(entries) != 1 {
+		t.Errorf("expected 1 entry left under @late (scope-b), got %d", len(entries))
+	}
+}
+
+// TestRemovePlugin_Project_ScopedLink_CleansEmptyScopeParent exercises the
+// project-scoped branch of removeFromDir. The empty-@scope-parent cleanup
+// must trigger for project-local installs the same way it does for global
+// installs — the `dir` parameter flows through pm.TargetDir(project), but
+// without an explicit test the project's branch is never asserted.
+func TestRemovePlugin_Project_ScopedLink_CleansEmptyScopeParent(t *testing.T) {
+	globalDir := t.TempDir()
+	projectDir := t.TempDir()
+	sourceDir := t.TempDir()
+	writeScopedPluginLike(t, sourceDir, "@late/scoped-plugin")
+
+	pm := NewPluginManager(globalDir)
+	pm.SetProjectDir(projectDir)
+	if _, err := InstallFromLocal(pm, sourceDir, true); err != nil {
+		t.Fatalf("InstallFromLocal(project=true) failed: %v", err)
+	}
+
+	scopeParent := filepath.Join(projectDir, "@late")
+	if _, err := os.Stat(scopeParent); err != nil {
+		t.Fatalf("expected project @late parent %s after scoped install: %v", scopeParent, err)
+	}
+
+	if _, err := RemovePlugin(pm, "@late/scoped-plugin", true); err != nil {
+		t.Fatalf("RemovePlugin failed: %v", err)
+	}
+
+	if _, err := os.Stat(scopeParent); !os.IsNotExist(err) {
+		t.Errorf("expected orphan project @late parent %s to be cleaned, but it still exists (err=%v)", scopeParent, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handlePluginRemove self-clean of stale skill symlinks
+// ---------------------------------------------------------------------------
+
+// writeSkillPlugin creates a plugin with one real SKILL.md under
+// `skills/<name>/SKILL.md` so RegisterPluginSkills synthesizes a
+// `<plugin>:<skill>` symlink that we can later watch get pruned.
+func writeSkillPlugin(t *testing.T, dir, pluginName, skillName string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "skills", skillName), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	pkg := `{"name": "` + pluginName + `", "version": "0.1.0", "description": "skills plugin", "late": {"skills": ["skills"]}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	body := "---\nname: " + skillName + "\ndescription: test skill\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "skills", skillName, "SKILL.md"), []byte(body), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+}
+
+func TestHandlePluginRemove_PurgesStaleSkillSymlink(t *testing.T) {
+	globalDir := t.TempDir()
+	sourceDir := t.TempDir()
+	xdgRoot := t.TempDir()
+
+	// Sandbox `lateSkillsDir()` so the test cannot damage the user's real
+	// `~/.config/late/skills` if our internal invariants drift. Go's
+	// `os.UserConfigDir()` honors `XDG_CONFIG_HOME` on every Unix-like
+	// target (Linux, macOS, BSD) per the freedesktop spec; pinning only
+	// this variable is sufficient and avoids sideways effects on
+	// `os.UserHomeDir()`/`isSuspiciousPluginPath` that overriding HOME
+	// would introduce.
+	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+	skillsDir := filepath.Join(xdgRoot, "late", "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+	if resolved, _ := lateSkillsDir(); resolved != skillsDir {
+		t.Fatalf("lateSkillsDir() = %q, want %q (XDG/HOME override misconfigured)", resolved, skillsDir)
+	}
+
+	writeSkillPlugin(t, sourceDir, "skills-plugin", "my-skill")
+
+	pm := NewPluginManager(globalDir)
+	if _, err := InstallFromLocal(pm, sourceDir); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// Discover + register so the namespaced skill symlink is materialized.
+	if err := pm.Discover(); err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if err := pm.RegisterPluginSkills(skillsDir); err != nil {
+		t.Fatalf("initial RegisterPluginSkills: %v", err)
+	}
+
+	linkPath := filepath.Join(skillsDir, "skills-plugin:my-skill")
+	if _, err := os.Lstat(linkPath); err != nil {
+		t.Fatalf("expected initial skill symlink at %s: %v", linkPath, err)
+	}
+
+	// Behavior under test: handlePluginRemove self-cleans the namespaced
+	// skill symlinks for the removed plugin immediately, without waiting
+	// for the next watcher tick.
+	handlePluginRemove(pm, []string{"skills-plugin"})
+
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Errorf("expected stale skill symlink %s to be pruned by handlePluginRemove, but it still exists", linkPath)
+	}
+}
+
+// TestHandlePluginRemove_PreservesSiblingSkillSymlink guards against an
+// over-pruning regression: if handlePluginRemove's self-clean step ever
+// miscomputed `keep` (e.g. by mistake that matched on bare names), a sibling
+// plugin's namespaced skill symlink would be wrongly removed.
+func TestHandlePluginRemove_PreservesSiblingSkillSymlink(t *testing.T) {
+	globalDir := t.TempDir()
+	srcA := t.TempDir()
+	srcB := t.TempDir()
+	xdgRoot := t.TempDir()
+
+	// Same sandboxing strategy as the single-plugin self-clean test.
+	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+	skillsDir := filepath.Join(xdgRoot, "late", "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+
+	// Two distinct plugins, intentionally both declaring a skill with the
+	// same basename to maximize the chance a bogus "name only" keep key
+	// would stomp both symlinks.
+	writeSkillPlugin(t, srcA, "sibling-a", "shared-skill")
+	writeSkillPlugin(t, srcB, "sibling-b", "shared-skill")
+
+	pm := NewPluginManager(globalDir)
+	if _, err := InstallFromLocal(pm, srcA); err != nil {
+		t.Fatalf("install A: %v", err)
+	}
+	if _, err := InstallFromLocal(pm, srcB); err != nil {
+		t.Fatalf("install B: %v", err)
+	}
+	if err := pm.Discover(); err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if err := pm.RegisterPluginSkills(skillsDir); err != nil {
+		t.Fatalf("initial RegisterPluginSkills: %v", err)
+	}
+
+	linkA := filepath.Join(skillsDir, "sibling-a:shared-skill")
+	linkB := filepath.Join(skillsDir, "sibling-b:shared-skill")
+	if _, err := os.Lstat(linkA); err != nil {
+		t.Fatalf("expected initial symlink %s: %v", linkA, err)
+	}
+	if _, err := os.Lstat(linkB); err != nil {
+		t.Fatalf("expected initial symlink %s: %v", linkB, err)
+	}
+
+	// Remove A; B's symlink must survive.
+	handlePluginRemove(pm, []string{"sibling-a"})
+
+	if _, err := os.Lstat(linkA); !os.IsNotExist(err) {
+		t.Errorf("expected symlink %s to be pruned, but it still exists", linkA)
+	}
+	if _, err := os.Lstat(linkB); err != nil {
+		t.Errorf("expected sibling symlink %s to survive the cleanup, but got err: %v", linkB, err)
+	}
+}

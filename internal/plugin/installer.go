@@ -565,16 +565,34 @@ func removeFromDir(dir, name string) error {
 		os.RemoveAll(npmPath)
 	}
 
-	// Remove scoped npm paths
+	// Remove scoped plugin artifacts and prune any @scope parent
+	// directory that becomes empty.
+	//
+	// The parent dir can live in two places depending on the install
+	// path the user used:
+	//   - <dir>/node_modules/@scope/<pkg>   (npm install)
+	//   - <dir>/@scope/<pkg>                (`late plugin link` install)
+	// Before this fix, `link`-installed scoped plugins left an empty
+	// `<dir>/@scope/` orphan after `late plugin remove`. Now we check
+	// both locations and clean up whichever is empty.
 	if strings.HasPrefix(name, "@") {
 		parts := strings.SplitN(name, "/", 2)
 		if len(parts) == 2 {
-			scopedPath := filepath.Join(dir, "node_modules", parts[0], parts[1])
-			os.RemoveAll(scopedPath)
-			// Remove parent @scope dir if empty
-			scopeDir := filepath.Join(dir, "node_modules", parts[0])
-			if entries, _ := os.ReadDir(scopeDir); len(entries) == 0 {
-				os.Remove(scopeDir)
+			scope := parts[0]
+			// npm install artifact (no-op for link installs).
+			os.RemoveAll(filepath.Join(dir, "node_modules", scope, parts[1]))
+
+			// Best-effort removal of any @scope parent that has been
+			// emptied. ENOENT is fine — the parent simply didn't exist
+			// for this install path. We do NOT remove non-empty scope
+			// parents so siblings under the same scope stay installed.
+			for _, scopeDir := range []string{
+				filepath.Join(dir, "node_modules", scope),
+				filepath.Join(dir, scope),
+			} {
+				if entries, err := os.ReadDir(scopeDir); err == nil && len(entries) == 0 {
+					_ = os.Remove(scopeDir)
+				}
 			}
 		}
 	}
