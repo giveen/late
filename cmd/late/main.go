@@ -216,6 +216,13 @@ func main() {
 		Model:        resolvedOpenAIConfig.Model,
 		EnableImages: *enableImagesReq,
 	}
+	if appConfig != nil {
+		if setting, ok := appConfig.GetModelForAgent("orchestrator"); ok {
+			resolvedClientConfig.BaseURL = setting.URL
+			resolvedClientConfig.APIKey = setting.Key
+			resolvedClientConfig.Model = setting.Model
+		}
+	}
 	c := client.NewClient(resolvedClientConfig)
 	c.DiscoverBackend(context.Background())
 
@@ -223,9 +230,9 @@ func main() {
 	resolvedSubagentConfig := appconfig.ResolveSubagentSettings(appConfig, resolvedOpenAIConfig)
 
 	subagentClient := c
-	if resolvedSubagentConfig.BaseURL != resolvedOpenAIConfig.BaseURL ||
-		resolvedSubagentConfig.APIKey != resolvedOpenAIConfig.APIKey ||
-		resolvedSubagentConfig.Model != resolvedOpenAIConfig.Model {
+	if resolvedSubagentConfig.BaseURL != resolvedClientConfig.BaseURL ||
+		resolvedSubagentConfig.APIKey != resolvedClientConfig.APIKey ||
+		resolvedSubagentConfig.Model != resolvedClientConfig.Model {
 		subagentClient = client.NewClient(client.Config{
 			BaseURL:      resolvedSubagentConfig.BaseURL,
 			APIKey:       resolvedSubagentConfig.APIKey,
@@ -286,16 +293,38 @@ func main() {
 	// We'll add middlewares later once the program is started
 	rootAgent := orchestrator.NewBaseOrchestrator("main", sess, nil, 0)
 
-	model := tui.NewModel(rootAgent, renderer)
-	model.ModelName = resolvedOpenAIConfig.Model
-	model.ShowCWD = *showCWDReq
+	model := tui.NewModel(rootAgent, renderer, appConfig)
+	model.ApplyOrchestratorModel = func(setting appconfig.ModelSetting) tea.Cmd {
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			sess.SetClient(newModelClient(ctx, setting, *enableImagesReq))
+			return nil
+		}
+	}
+	if appConfig != nil {
+		if setting, ok := appConfig.GetModelForAgent("orchestrator"); ok {
+			model.ModelName = setting.Model
+		} else {
+			model.ModelName = resolvedOpenAIConfig.Model
+		}
 
-	// Detect if subagents use a different model/backend
-	if resolvedSubagentConfig.BaseURL != resolvedOpenAIConfig.BaseURL ||
-		resolvedSubagentConfig.APIKey != resolvedOpenAIConfig.APIKey ||
-		resolvedSubagentConfig.Model != resolvedOpenAIConfig.Model {
+		var subagentInfos []string
+		for _, sub := range assets.GetSubagents() {
+			if setting, ok := appConfig.GetModelForAgent(sub.Name); ok {
+				subagentInfos = append(subagentInfos, fmt.Sprintf("%s:%s", sub.Name, setting.Model))
+			}
+		}
+		if len(subagentInfos) > 0 {
+			model.SubagentInfo = strings.Join(subagentInfos, ", ")
+		} else {
+			model.SubagentInfo = resolvedSubagentConfig.Model
+		}
+	} else {
+		model.ModelName = resolvedOpenAIConfig.Model
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
+	model.ShowCWD = *showCWDReq
 
 	p := tea.NewProgram(model)
 
@@ -322,7 +351,23 @@ func main() {
 
 	if *enableSubagentsReq {
 		runner := func(ctx context.Context, goal string, ctxFiles []string, agentType string) (string, error) {
-			child, err := agent.NewSubagentOrchestrator(subagentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
+			var currentSubagentClient *client.Client
+			if appConfig != nil {
+				if setting, ok := appConfig.GetModelForAgent(agentType); ok {
+					currentSubagentClient = client.NewClient(client.Config{
+						BaseURL:      setting.URL,
+						APIKey:       setting.Key,
+						Model:        setting.Model,
+						EnableImages: *enableImagesReq,
+					})
+					currentSubagentClient.DiscoverBackend(ctx)
+				}
+			}
+			if currentSubagentClient == nil {
+				currentSubagentClient = subagentClient
+			}
+
+			child, err := agent.NewSubagentOrchestrator(currentSubagentClient, goal, ctxFiles, agentType, enabledTools, *injectCWDReq, *gemmaThinkingReq, *subagentMaxTurns, rootAgent, p)
 			if err != nil {
 				return "", err
 			}
@@ -348,6 +393,17 @@ func main() {
 		fmt.Printf("Unspecified error: %v", err)
 		os.Exit(1)
 	}
+}
+
+func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableImages bool) *client.Client {
+	c := client.NewClient(client.Config{
+		BaseURL:      setting.URL,
+		APIKey:       setting.Key,
+		Model:        setting.Model,
+		EnableImages: enableImages,
+	})
+	c.DiscoverBackend(ctx)
+	return c
 }
 
 // handleSessionCommand processes session subcommands

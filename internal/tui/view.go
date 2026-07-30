@@ -51,6 +51,22 @@ func (m Model) View() tea.View {
 			Width(m.Width).
 			Render(pickerHints)
 	}
+	if m.Mode == ViewModelPicker {
+		hUpDn := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("↑/↓"), statusTextStyle.Render(" Select Agent "))
+		hLfRt := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("←/→"), statusTextStyle.Render(" Choose Model "))
+		hEnter := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Enter"), statusTextStyle.Render(" Save "))
+		hEsc := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Esc"), statusTextStyle.Render(" Cancel "))
+		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hUpDn, statusBg("  "), hLfRt, statusBg("  "), hEnter, statusBg("  "), hEsc)
+
+		iStr = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("#232329")).
+			BorderBackground(appBgColor).
+			Background(appBgColor).
+			Width(m.Width).
+			Padding(1, 2).
+			Render(pickerHints)
+	}
 
 	aStr := m.autocompleteView()
 	sStr := m.statusBarView()
@@ -132,7 +148,7 @@ func (m *Model) autocompleteView() string {
 		}
 
 		nameStr := nameStyle.Render(fmt.Sprintf("%s%-9s", prefix, item.Name))
-		
+
 		descWidth := (w - 4) - lipgloss.Width(nameStr)
 		if descWidth < 0 {
 			descWidth = 0
@@ -305,6 +321,40 @@ func (m *Model) statusBarView() string {
 		return ""
 	}
 
+	if m.Mode == ViewModelPicker {
+		bullet := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render("◆")
+		label := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("models")
+		leftSection := bullet + statusBg(" ") + label
+
+		status := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("Configuring active agent models")
+		hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
+		if hasToast {
+			if m.ToastWarning {
+				status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
+			} else {
+				status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+			}
+		}
+
+		rightSection := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("enter Save • esc Cancel")
+
+		usableW := w - 2
+		leftWidth := lipgloss.Width(leftSection)
+		rightWidth := lipgloss.Width(rightSection)
+		statusWidth := lipgloss.Width(status)
+
+		spaceWidth := usableW - leftWidth - rightWidth - statusWidth - 3
+		if spaceWidth < 0 {
+			spaceWidth = 0
+		}
+		space := statusBg(strings.Repeat(" ", spaceWidth))
+
+		parts := []string{leftSection, statusBg("   "), status, space, rightSection}
+		content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
+		paddedContent := statusBg(" ") + content + statusBg(" ")
+		return statusBarBaseStyle.Width(w).Render(paddedContent)
+	}
+
 	s := m.GetAgentState(m.Focused.ID())
 
 	var leftSection string
@@ -362,7 +412,11 @@ func (m *Model) statusBarView() string {
 	var status string
 	hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
 	if hasToast {
-		status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+		if m.ToastWarning {
+			status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
+		} else {
+			status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+		}
 	} else if statusText != "" && statusText != "Working..." && statusText != "Ready" && statusText != "Closed" {
 		if s.State == StateConfirmTool {
 			status = statusWarningStyle.Render(statusText)
@@ -443,8 +497,14 @@ func (m *Model) statusBarView() string {
 				maxStatusW = 0
 			}
 			if hasToast {
-				truncated := m.truncateWithEllipsis("✓ "+m.ToastMessage, maxStatusW)
-				status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render(truncated)
+				prefix := "✓ "
+				style := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true)
+				if m.ToastWarning {
+					prefix = "⚠ "
+					style = statusWarningStyle
+				}
+				truncated := m.truncateWithEllipsis(prefix+m.ToastMessage, maxStatusW)
+				status = style.Render(truncated)
 			} else {
 				truncated := m.truncateWithEllipsis(statusText, maxStatusW)
 				if s.State == StateConfirmTool {
@@ -480,6 +540,11 @@ func (m *Model) statusBarView() string {
 
 func (m *Model) updateViewport() {
 	if m.Focused == nil {
+		return
+	}
+
+	if m.Mode == ViewModelPicker {
+		m.renderModelPickerView()
 		return
 	}
 
@@ -1233,7 +1298,6 @@ func (m *Model) renderRewindView() {
 	m.Viewport.SetContent(paddedContent)
 }
 
-
 // overlayCentered places the dialog string centered over the background string,
 // matching the viewport dimensions. The dialog is sized to fit its content.
 func overlayCentered(background, dialog string, vpWidth, vpHeight int) string {
@@ -1316,4 +1380,140 @@ func splitMarkdownChunks(content string) (complete []string, tail string) {
 	}
 	tail = content[lastSplit:]
 	return
+}
+
+// renderModelPickerView renders the active agent models configuring list in the viewport.
+func (m *Model) renderModelPickerView() {
+	s := m.GetAgentState(m.Focused.ID())
+	s.LastTotalContent = ""
+
+	msgWidth := m.Viewport.Width() - 2
+	if msgWidth < 1 {
+		msgWidth = 80
+	}
+
+	var lines []string
+	header := lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true).
+		Background(appBgColor).
+		PaddingLeft(1).
+		Render("── Configure Agent Models ──────────────────────────")
+	lines = append(lines, header, "")
+
+	if len(m.ModelPickerModels) <= 1 && (m.AppConfig == nil || len(m.AppConfig.Models) == 0) {
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(warningColor).
+			Background(appBgColor).
+			PaddingLeft(2).
+			Render("No models configured in ~/.config/late/config.json"))
+		lines = append(lines, "", lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			PaddingLeft(2).
+			Render("Please add a 'models' array to your config file first."))
+	} else {
+		// Instructions
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			PaddingLeft(2).
+			Render("Use ↑/↓ to choose an agent, and ←/→ to select a model."), "")
+
+		// Print agents and their models
+		for aIdx, agentName := range m.ModelPickerAgents {
+			agentLabel := agentName
+			if agentName == "orchestrator" {
+				agentLabel = "main/orchestrator"
+			}
+
+			// Highlight the active row/agent
+			agentStyle := lipgloss.NewStyle().Foreground(textColor)
+			prefix := "  "
+			if aIdx == m.ModelPickerAgentIndex {
+				prefix = "▸ "
+				agentStyle = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+			}
+
+			// Render agent name, right-padded
+			agentNamePart := prefix + agentLabel
+			agentNameStr := fmt.Sprintf("%-22s", agentNamePart)
+			agentNameRendered := agentStyle.Background(appBgColor).Render(agentNameStr)
+
+			// Build the model choices list for this agent
+			var modelChoices []string
+			selectedIdx := m.ModelPickerAgentSelections[agentName]
+
+			for mIdx, modelRef := range m.ModelPickerModels {
+				modelLabel := modelRef
+				if modelRef != "default" && m.AppConfig != nil {
+					for _, setting := range m.AppConfig.Models {
+						if setting.Reference() == modelRef {
+							modelLabel = setting.Model
+							if setting.ID != "" {
+								modelLabel += " (" + setting.ID + ")"
+							}
+							break
+						}
+					}
+				}
+
+				var optStr string
+				if mIdx == selectedIdx {
+					// This option is selected
+					if aIdx == m.ModelPickerAgentIndex {
+						// Row is active: highlight selected model with primary color
+						optStr = lipgloss.NewStyle().
+							Foreground(appBgColor).
+							Background(primaryColor).
+							Bold(true).
+							Padding(0, 1).
+							Render(modelLabel)
+					} else {
+						// Row is inactive: highlight selected model with secondary color
+						optStr = lipgloss.NewStyle().
+							Foreground(appBgColor).
+							Background(secondaryColor).
+							Bold(true).
+							Padding(0, 1).
+							Render(modelLabel)
+					}
+				} else {
+					// Not selected
+					optStr = lipgloss.NewStyle().
+						Foreground(subtextColor).
+						Background(appBgColor).
+						Padding(0, 1).
+						Render(modelLabel)
+				}
+				modelChoices = append(modelChoices, optStr)
+			}
+
+			rowContent := agentNameRendered + strings.Join(modelChoices, "  ")
+
+			// Wrap row in a box style if it's active for extra pop
+			rowStyle := lipgloss.NewStyle().Background(appBgColor)
+			if aIdx == m.ModelPickerAgentIndex {
+				rowStyle = lipgloss.NewStyle().Background(thoughtBgColor)
+			}
+
+			lines = append(lines, rowStyle.Render(rowContent))
+		}
+	}
+
+	lines = append(lines, "", "")
+
+	// Footer hints
+	footer := lipgloss.NewStyle().
+		Foreground(subtextColor).
+		Background(appBgColor).
+		PaddingLeft(2).
+		Render("Press [Enter] to save, [Esc] to cancel.")
+	lines = append(lines, footer)
+
+	paddedContent := lipgloss.NewStyle().
+		Width(m.Viewport.Width()).
+		Background(appBgColor).
+		Render(strings.Join(lines, "\n"))
+	m.Viewport.SetContent(paddedContent)
 }

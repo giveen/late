@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"late/internal/assets"
 	"late/internal/common"
+	"late/internal/config"
 	"late/internal/git"
 	"math/rand/v2"
 	"net/http"
@@ -49,6 +51,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	if _, ok := msg.(clearToastMsg); ok {
 		m.ToastMessage = ""
+		m.ToastWarning = false
 		m.updateViewport()
 		return m, nil
 	}
@@ -148,6 +151,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 				m.Input.InsertString(placeholder)
 
 				m.ToastMessage = fmt.Sprintf("pasted %d lines (%d chars)", lineCount, len(text))
+				m.ToastWarning = false
 				m.ToastExpireTime = time.Now().UnixMilli() + 2500
 
 				forwardToInput = false
@@ -184,6 +188,10 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 				forwardToInput = false
 			}
 		}
+	}
+
+	if m.Mode == ViewModelPicker || m.Mode == ViewRewind || m.Mode == ViewCommitLog || m.Mode == ViewHelp {
+		forwardToInput = false
 	}
 
 	// Update Sub-models
@@ -227,6 +235,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 				m.Input.CursorEnd()
 
 				m.ToastMessage = fmt.Sprintf("pasted %d lines (%d chars)", lineCount, charCount)
+				m.ToastWarning = false
 				m.ToastExpireTime = time.Now().UnixMilli() + 2500
 				clearCmd := tea.Tick(2500*time.Millisecond, func(t time.Time) tea.Msg {
 					return clearToastMsg{}
@@ -282,6 +291,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 							err := clipboard.WriteAll(foundBlock.Content)
 							if err == nil {
 								m.ToastMessage = "copied response to clipboard"
+								m.ToastWarning = false
 								if foundBlock.MessageIndex >= 0 {
 									history := m.Focused.History()
 									if foundBlock.MessageIndex < len(history) {
@@ -352,6 +362,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 					// Show toast with just the filename
 					fname := filepath.Base(file)
 					m.ToastMessage = "attached " + fname
+					m.ToastWarning = false
 					m.ToastExpireTime = time.Now().UnixMilli() + 2500
 					clearCmd := tea.Tick(2500*time.Millisecond, func(t time.Time) tea.Msg {
 						return clearToastMsg{}
@@ -371,6 +382,126 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		focusedState := m.GetAgentState(m.Focused.ID())
+
+		// Model picker view key handling
+		if m.Mode == ViewModelPicker {
+			switch msg.String() {
+			case "up":
+				m.ModelPickerAgentIndex = max(0, m.ModelPickerAgentIndex-1)
+				m.updateViewport()
+				return m, nil
+			case "down":
+				m.ModelPickerAgentIndex = min(len(m.ModelPickerAgents)-1, m.ModelPickerAgentIndex+1)
+				m.updateViewport()
+				return m, nil
+			case "left":
+				if len(m.ModelPickerAgents) > 0 && len(m.ModelPickerModels) > 0 {
+					activeAgent := m.ModelPickerAgents[m.ModelPickerAgentIndex]
+					currentSel := m.ModelPickerAgentSelections[activeAgent]
+					newSel := max(0, currentSel-1)
+					m.ModelPickerAgentSelections[activeAgent] = newSel
+					m.updateViewport()
+				}
+				return m, nil
+			case "right":
+				if len(m.ModelPickerAgents) > 0 && len(m.ModelPickerModels) > 0 {
+					activeAgent := m.ModelPickerAgents[m.ModelPickerAgentIndex]
+					currentSel := m.ModelPickerAgentSelections[activeAgent]
+					newSel := min(len(m.ModelPickerModels)-1, currentSel+1)
+					m.ModelPickerAgentSelections[activeAgent] = newSel
+					m.updateViewport()
+				}
+				return m, nil
+			case "enter":
+				if m.hasActiveAgent() {
+					m.ToastMessage = "Models can be changed when all agents are idle"
+					m.ToastWarning = true
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					return m, clearCmd
+				}
+
+				var applyModelCmd tea.Cmd
+
+				// Save choices to AppConfig
+				if m.AppConfig != nil {
+					stagedConfig := *m.AppConfig
+					stagedConfig.AgentModels = make(map[string]string, len(m.AppConfig.AgentModels))
+					for agent, modelRef := range m.AppConfig.AgentModels {
+						stagedConfig.AgentModels[agent] = modelRef
+					}
+					for _, agent := range m.ModelPickerAgents {
+						selIdx := m.ModelPickerAgentSelections[agent]
+						modelRef := m.ModelPickerModels[selIdx]
+						if modelRef == "default" {
+							delete(stagedConfig.AgentModels, agent)
+						} else {
+							stagedConfig.AgentModels[agent] = modelRef
+						}
+					}
+					// Write config to disk
+					if err := config.SaveConfig(&stagedConfig); err != nil {
+						m.Err = fmt.Errorf("failed to save config: %w", err)
+						return m, nil
+					}
+					m.AppConfig.AgentModels = stagedConfig.AgentModels
+
+					// Update ModelName and SubagentInfo dynamically
+					if setting, ok := m.AppConfig.GetModelForAgent("orchestrator"); ok {
+						m.ModelName = setting.Model
+						if m.ApplyOrchestratorModel != nil {
+							applyModelCmd = m.ApplyOrchestratorModel(setting)
+						}
+					} else {
+						resolvedOpenAIConfig := config.ResolveOpenAISettings(m.AppConfig)
+						m.ModelName = resolvedOpenAIConfig.Model
+						if m.ApplyOrchestratorModel != nil {
+							applyModelCmd = m.ApplyOrchestratorModel(config.ModelSetting{
+								URL:   resolvedOpenAIConfig.BaseURL,
+								Key:   resolvedOpenAIConfig.APIKey,
+								Model: resolvedOpenAIConfig.Model,
+							})
+						}
+					}
+
+					var subagentInfos []string
+					for _, sub := range assets.GetSubagents() {
+						if setting, ok := m.AppConfig.GetModelForAgent(sub.Name); ok {
+							subagentInfos = append(subagentInfos, fmt.Sprintf("%s:%s", sub.Name, setting.Model))
+						}
+					}
+					if len(subagentInfos) > 0 {
+						m.SubagentInfo = strings.Join(subagentInfos, ", ")
+					} else {
+						resolvedSubagentConfig := config.ResolveSubagentSettings(m.AppConfig, config.ResolveOpenAISettings(m.AppConfig))
+						m.SubagentInfo = resolvedSubagentConfig.Model
+					}
+				}
+
+				m.ToastMessage = "agent models updated"
+				m.ToastWarning = false
+				m.ToastExpireTime = time.Now().UnixMilli() + 3000
+				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearToastMsg{}
+				})
+
+				m.Mode = ViewChat
+				focusedState.RenderedHistory = nil
+				m.updateLayout()
+				m.updateViewport()
+				return m, tea.Batch(clearCmd, applyModelCmd)
+
+			case "esc":
+				m.Mode = ViewChat
+				focusedState.RenderedHistory = nil
+				m.updateLayout()
+				m.updateViewport()
+				return m, nil
+			}
+			return m, nil
+		}
 
 		// Rewind view key handling
 		if m.Mode == ViewRewind {
@@ -414,6 +545,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 					)
 
 					m.ToastMessage = "conversation rewound"
+					m.ToastWarning = false
 					m.ToastExpireTime = time.Now().UnixMilli() + 3000
 					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 						return clearToastMsg{}
@@ -641,6 +773,58 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.updateLayout()
 				return m, nil
 			}
+			if cmd == "/model" {
+				m.Input.Reset()
+				m.Input.SetValue("> ")
+				if m.hasActiveAgent() {
+					m.ToastMessage = "Models can be changed when all agents are idle"
+					m.ToastWarning = true
+					m.ToastExpireTime = time.Now().UnixMilli() + 3000
+					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+						return clearToastMsg{}
+					})
+					m.updateViewport()
+					return m, clearCmd
+				}
+				m.Mode = ViewModelPicker
+
+				// Populate agent types
+				m.ModelPickerAgents = []string{"orchestrator"}
+				for _, sub := range assets.GetSubagents() {
+					m.ModelPickerAgents = append(m.ModelPickerAgents, sub.Name)
+				}
+
+				// Populate stable model references.
+				m.ModelPickerModels = []string{"default"}
+				if m.AppConfig != nil {
+					for _, model := range m.AppConfig.Models {
+						m.ModelPickerModels = append(m.ModelPickerModels, model.Reference())
+					}
+				}
+
+				m.ModelPickerAgentIndex = 0
+				m.ModelPickerAgentSelections = make(map[string]int)
+
+				// Load current selections
+				for _, agentName := range m.ModelPickerAgents {
+					selectedModelRef := ""
+					if m.AppConfig != nil && m.AppConfig.AgentModels != nil {
+						selectedModelRef = m.AppConfig.AgentModels[agentName]
+					}
+					foundIdx := 0 // default to 0 ("default")
+					for idx, modelRef := range m.ModelPickerModels {
+						if modelRef == selectedModelRef {
+							foundIdx = idx
+							break
+						}
+					}
+					m.ModelPickerAgentSelections[agentName] = foundIdx
+				}
+
+				focusedState.RenderedHistory = nil
+				m.updateLayout()
+				return m, nil
+			}
 			if cmd == "/new" {
 				m.Input.Reset()
 				m.Input.SetValue("> ")
@@ -656,6 +840,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				m.LastFocusedID = ""
 				m.updateViewport()
 				m.ToastMessage = "conversation cleared"
+				m.ToastWarning = false
 				m.ToastExpireTime = time.Now().UnixMilli() + 3000
 				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 					return clearToastMsg{}
@@ -696,6 +881,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				}
 				if len(entries) == 0 {
 					m.ToastMessage = "no messages to rewind to"
+					m.ToastWarning = false
 					m.ToastExpireTime = time.Now().UnixMilli() + 3000
 					clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 						return clearToastMsg{}
@@ -987,6 +1173,9 @@ func (m *Model) updateLayout() {
 
 	m.Viewport.SetWidth(availableWidth)
 	vHeight := m.Height - (m.Input.Height() + 1) - StatusBarHeight - AppPadding
+	if m.Mode == ViewModelPicker {
+		vHeight = m.Height - 3 - StatusBarHeight - AppPadding
+	}
 
 	// Reserve space for autocomplete dropdown
 	if m.ShowAutocomplete && len(m.AutocompleteItems) > 0 {

@@ -527,3 +527,106 @@ func TestResolveSubagentSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_GetModelForAgent(t *testing.T) {
+	cfg := &Config{
+		Models: []ModelSetting{
+			{URL: "http://localhost:8080", Key: "key-1", Model: "model-1"},
+			{URL: "http://localhost:9090", Key: "key-2", Model: "model-2"},
+		},
+		AgentModels: map[string]string{
+			"orchestrator": "model-1",
+			"coder":        "model-2",
+			"unknown":      "model-3",
+		},
+	}
+
+	tests := []struct {
+		agentType string
+		wantModel string
+		wantOk    bool
+	}{
+		{"orchestrator", "model-1", true},
+		{"coder", "model-2", true},
+		{"unknown", "", false},
+		{"missing", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.agentType, func(t *testing.T) {
+			got, ok := cfg.GetModelForAgent(tt.agentType)
+			if ok != tt.wantOk {
+				t.Errorf("GetModelForAgent(%q) ok = %v, want %v", tt.agentType, ok, tt.wantOk)
+			}
+			if ok && got.Model != tt.wantModel {
+				t.Errorf("GetModelForAgent(%q) got model = %q, want %q", tt.agentType, got.Model, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestConfig_GetModelForAgentUsesStableID(t *testing.T) {
+	cfg := &Config{
+		Models: []ModelSetting{
+			{ID: "provider-a", URL: "https://a.example/v1", Model: "shared-model"},
+			{ID: "provider-b", URL: "https://b.example/v1", Model: "shared-model"},
+		},
+		AgentModels: map[string]string{"orchestrator": "provider-b"},
+	}
+
+	got, ok := cfg.GetModelForAgent("orchestrator")
+	if !ok {
+		t.Fatal("expected model setting to resolve")
+	}
+	if got.URL != "https://b.example/v1" {
+		t.Fatalf("resolved URL = %q, want provider B", got.URL)
+	}
+}
+
+func TestSaveConfigAtomicallyReplacesFile(t *testing.T) {
+	configRoot := t.TempDir()
+	setUserConfigEnv(t, configRoot)
+
+	if _, err := LoadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	configPath := lateConfigPath(t)
+	before, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{OpenAIModel: "replacement-model"}
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	after, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && os.SameFile(before, after) {
+		t.Fatal("config file was modified in place instead of atomically replaced")
+	}
+	if runtime.GOOS != "windows" && after.Mode().Perm() != configFilePerm {
+		t.Fatalf("config file permissions = %o, want %o", after.Mode().Perm(), configFilePerm)
+	}
+
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.OpenAIModel != "replacement-model" {
+		t.Fatalf("saved model = %q, want replacement-model", loaded.OpenAIModel)
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(configPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) == ".tmp" {
+			t.Fatalf("temporary config was not cleaned up: %s", entry.Name())
+		}
+	}
+}

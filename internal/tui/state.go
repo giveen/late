@@ -3,6 +3,7 @@ package tui
 import (
 	"late/internal/client"
 	"late/internal/common"
+	"late/internal/config"
 	"late/internal/git"
 
 	"charm.land/bubbles/v2/filepicker"
@@ -36,6 +37,7 @@ const (
 	ViewFilePicker
 	ViewCommitLog
 	ViewRewind
+	ViewModelPicker
 )
 
 // Fixed layout heights (crush-style)
@@ -57,6 +59,7 @@ var AvailableCommands = []CommandDef{
 	{Name: "/compose", Description: "Compose a message with an editor"},
 	{Name: "/help", Description: "Show help and shortcuts"},
 	{Name: "/log", Description: "View git commit log"},
+	{Name: "/model", Description: "Select AI model for agents"},
 	{Name: "/quit", Description: "Exit the application"},
 	{Name: "/rewind", Description: "Rewind conversation history"},
 }
@@ -144,12 +147,23 @@ type Model struct {
 	LastClickTime   int64
 	ToastMessage    string
 	ToastExpireTime int64
+	ToastWarning    bool
 
 	// Model and config info (set from main.go after creation)
 	ModelName    string // Active model name
 	SubagentInfo string // Subagent model/config description, empty if same as main
 	CWD          string // Current working directory, shown in status bar
 	ShowCWD      bool   // Whether to show current working directory in status bar
+
+	// Configuration
+	AppConfig              *config.Config
+	ApplyOrchestratorModel func(config.ModelSetting) tea.Cmd
+
+	// Model picker fields
+	ModelPickerAgents          []string
+	ModelPickerModels          []string
+	ModelPickerAgentIndex      int
+	ModelPickerAgentSelections map[string]int
 
 	// Esc confirmation
 	EscConfirmPending bool   // Show "are you sure?" when Esc pressed at main view
@@ -198,6 +212,15 @@ func (m *Model) GetAgentState(id string) *AppState {
 	}
 	m.AgentStates[id] = s
 	return s
+}
+
+func (m *Model) hasActiveAgent() bool {
+	for _, state := range m.AgentStates {
+		if state.State != StateIdle && state.State != StateContextWarning {
+			return true
+		}
+	}
+	return false
 }
 
 // Messenger is an interface for sending messages to the TUI (implemented by tea.Program)
