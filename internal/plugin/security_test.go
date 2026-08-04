@@ -396,6 +396,124 @@ func TestRegisterPluginSkills_AllowsInDirSkill(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Manifest name traversal (#17)
+// ---------------------------------------------------------------------------
+
+// TestLoadPlugin_RejectsTraversalName verifies a manifest whose name would
+// escape the plugin store (.. components, empty components, backslashes) is
+// rejected at load time, so no installer/remover ever joins it into a path.
+func TestLoadPlugin_RejectsTraversalName(t *testing.T) {
+	for _, name := range []string{"..", "../evil", "a/../../evil", ".", "./evil", "a//b", "@scope/", `a\..\evil`} {
+		dir := t.TempDir()
+		pkg := `{"name":"` + name + `","version":"1.0.0","late":{}}`
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, err := LoadPlugin(dir); err == nil {
+			t.Errorf("LoadPlugin accepted traversal name %q", name)
+		}
+	}
+}
+
+// TestLoadPlugin_AcceptsScopedName verifies legitimate npm-scoped names
+// still load.
+func TestLoadPlugin_AcceptsScopedName(t *testing.T) {
+	dir := t.TempDir()
+	pkg := `{"name":"@scope/my-plugin","version":"1.0.0","late":{}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	p, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin rejected scoped name: %v", err)
+	}
+	if p.Name != "@scope/my-plugin" {
+		t.Errorf("unexpected name: %s", p.Name)
+	}
+}
+
+// TestInstallFromLocal_RejectsTraversalName verifies InstallFromLocal fails
+// before creating anything outside the plugin store when the manifest name
+// escapes it.
+func TestInstallFromLocal_RejectsTraversalName(t *testing.T) {
+	root := t.TempDir()
+	storeDir := filepath.Join(root, "store")
+	srcDir := filepath.Join(root, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	pkg := `{"name":"../../escaped","version":"1.0.0","late":{}}`
+	if err := os.WriteFile(filepath.Join(srcDir, "package.json"), []byte(pkg), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	pm := NewPluginManager(storeDir)
+	if _, err := InstallFromLocal(pm, srcDir); err == nil {
+		t.Fatal("InstallFromLocal accepted a traversal manifest name")
+	}
+
+	// The escape target (store parent + "escaped") must never be created.
+	if _, err := os.Stat(filepath.Join(root, "escaped")); !os.IsNotExist(err) {
+		t.Errorf("install created symlink outside the plugin store: %v", err)
+	}
+}
+
+// TestRemovePlugin_RejectsTraversalName verifies removal can't target paths
+// outside the plugin store: a traversal name is never in the registry (only
+// validated manifest names are), so RemovePlugin fails before any delete.
+func TestRemovePlugin_RejectsTraversalName(t *testing.T) {
+	root := t.TempDir()
+	storeDir := filepath.Join(root, "store")
+	victim := filepath.Join(root, "victim")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	marker := filepath.Join(victim, "keep.txt")
+	if err := os.WriteFile(marker, []byte("x"), 0644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	pm := NewPluginManager(storeDir)
+	if _, err := RemovePlugin(pm, "../victim"); err == nil {
+		t.Fatal("RemovePlugin accepted a traversal name")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("victim directory was modified: %v", err)
+	}
+}
+
+// TestDiscover_SkipsTraversalMetaName verifies a planted .late-plugin.json
+// with a traversal name is rejected by Discover instead of registered, so
+// it can never be removed through the registry.
+func TestDiscover_SkipsTraversalMetaName(t *testing.T) {
+	root := t.TempDir()
+	storeDir := filepath.Join(root, "store")
+	evilDir := filepath.Join(storeDir, "evil")
+	if err := os.MkdirAll(evilDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	meta := InstalledPlugin{Name: "../victim", Path: evilDir, Late: &LateManifest{}}
+	data, err := json.Marshal(&meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(evilDir, ".late-plugin.json"), data, 0644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	pm := NewPluginManager(storeDir)
+	if err := pm.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if p := pm.Plugin("../victim"); p != nil {
+		t.Error("traversal-named plugin was registered")
+	}
+	if _, err := RemovePlugin(pm, "../victim"); err == nil {
+		t.Error("RemovePlugin removed a traversal-named plugin")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SavePluginMeta mtime bump (#7 robustness)
 // ---------------------------------------------------------------------------
 

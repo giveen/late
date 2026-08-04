@@ -312,6 +312,27 @@ func LoadPlugin(dir string) (*InstalledPlugin, error) {
 	return nil, fmt.Errorf("no recognized plugin format in %s: %w", dir, err)
 }
 
+// validatePluginName rejects manifest names that would escape the plugin
+// store when joined into a filesystem path (install/remove/update all use
+// the name as a path component). Plain ("my-plugin") and npm-scoped
+// ("@scope/my-plugin") names are accepted; anything with an empty, "." or
+// ".." path component is rejected, as is any name containing a backslash
+// (a path separator on Windows).
+func validatePluginName(name string) error {
+	if name == "" {
+		return fmt.Errorf("plugin name is empty")
+	}
+	if strings.Contains(name, "\\") {
+		return fmt.Errorf("plugin name %q contains a path separator", name)
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("plugin name %q contains unsafe path component %q", name, part)
+		}
+	}
+	return nil
+}
+
 // tryLoadNativeLate loads a plugin from a package.json with a "late" field.
 func tryLoadNativeLate(dir string) (*InstalledPlugin, error) {
 	pkgPath := filepath.Join(dir, "package.json")
@@ -325,8 +346,8 @@ func tryLoadNativeLate(dir string) (*InstalledPlugin, error) {
 		return nil, fmt.Errorf("failed to parse %s: %w", pkgPath, err)
 	}
 
-	if pkg.Name == "" {
-		return nil, fmt.Errorf("plugin at %s is missing 'name' in package.json", dir)
+	if err := validatePluginName(pkg.Name); err != nil {
+		return nil, fmt.Errorf("plugin at %s has invalid name: %w", dir, err)
 	}
 
 	if pkg.Late == nil {
@@ -349,8 +370,8 @@ func tryLoadOmp(dir string) (*InstalledPlugin, error) {
 		return nil, fmt.Errorf("failed to parse %s: %w", pkgPath, err)
 	}
 
-	if pkg.Name == "" {
-		return nil, fmt.Errorf("plugin at %s is missing 'name' in package.json", dir)
+	if err := validatePluginName(pkg.Name); err != nil {
+		return nil, fmt.Errorf("plugin at %s has invalid name: %w", dir, err)
 	}
 
 	if pkg.Omp == nil {
@@ -402,8 +423,8 @@ func tryLoadClaudeCode(dir string) (*InstalledPlugin, error) {
 		return nil, fmt.Errorf("failed to parse %s: %w", manifestPath, err)
 	}
 
-	if manifest.Name == "" {
-		return nil, fmt.Errorf("claude plugin at %s is missing 'name' in plugin.json", dir)
+	if err := validatePluginName(manifest.Name); err != nil {
+		return nil, fmt.Errorf("claude plugin at %s has invalid name: %w", dir, err)
 	}
 
 	late := &LateManifest{}
@@ -542,6 +563,12 @@ func LoadPluginMeta(dir string) (*InstalledPlugin, error) {
 
 	// Ensure the Path field is up to date
 	plugin.Path = dir
+
+	// The meta file is user-editable; re-validate the name so a planted
+	// traversal name can't reach remove/update path joins via the registry.
+	if err := validatePluginName(plugin.Name); err != nil {
+		return nil, fmt.Errorf("plugin metadata at %s has invalid name: %w", metaPath, err)
+	}
 
 	return &plugin, nil
 }
