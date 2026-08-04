@@ -200,6 +200,24 @@ func TestRunHook_TimeoutEnforced(t *testing.T) {
 	}
 }
 
+// 4b. Hook execution: payloads larger than the old 256-byte cap flow
+// through intact. Tool arguments, tool results, and user messages
+// routinely exceed 256 bytes; the cap is a sanity bound, not a
+// functional limit.
+func TestRunHook_LargePayloadPassesThrough(t *testing.T) {
+	pluginDir := t.TempDir()
+	script := filepath.Join(pluginDir, "echo.sh")
+	writeExecutableShell(t, script, `cat`)
+	payload := []byte(strings.Repeat("x", 64*1024)) // 64 KiB, 256x the old cap
+	out, err := runHook(context.Background(), pluginDir, "echo.sh", payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != string(payload) {
+		t.Fatalf("payload corrupted: got %d bytes, want %d", len(out), len(payload))
+	}
+}
+
 // 5. HookedMessage: empty/no hooks returns input unchanged
 func TestHookedMessage_NoHooksReturnsInput(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())

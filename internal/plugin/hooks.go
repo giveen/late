@@ -19,9 +19,14 @@ import (
 
 // Per-hook execution limits.
 const (
-	hookTimeout      = 15 * time.Second
-	maxStderrBytes   = 4096
-	hookCommandMax   = 256 // max bytes for stdin payload before we error out
+	hookTimeout    = 15 * time.Second
+	maxStderrBytes = 4096
+	// hookStdinMax bounds the stdin payload sanity check. Payloads routinely
+	// exceed 256 bytes (tool arguments, tool results, full user messages),
+	// so the cap is generous; it only guards against pathological sizes —
+	// the caller already holds the payload in memory and the hook timeout
+	// bounds how long a script may consume it.
+	hookStdinMax = 16 << 20 // 16 MiB
 )
 
 // ToolCallHookPayload is written to the script's stdin when an OnToolCall
@@ -67,8 +72,8 @@ func runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []b
 	cmd.Dir = pluginDir
 
 	if len(stdin) > 0 {
-		if len(stdin) > hookCommandMax {
-			return "", fmt.Errorf("hook stdin payload too large (%d > %d)", len(stdin), hookCommandMax)
+		if len(stdin) > hookStdinMax {
+			return "", fmt.Errorf("hook stdin payload too large (%d > %d)", len(stdin), hookStdinMax)
 		}
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
