@@ -102,3 +102,30 @@ func TestPluginCommands_IsolatedModels(t *testing.T) {
 		t.Errorf("expected m2 to have [/m2-cmd], got %v", c)
 	}
 }
+
+// TestIsPluginCmd_MatchesWithArgs verifies isPluginCmd matches a registered
+// command on its first whitespace-separated field, so handlers can receive
+// trailing arguments ("/lint file.go" must match "/lint") while lookalike
+// prefixes ("/lint2") still do not match.
+func TestIsPluginCmd_MatchesWithArgs(t *testing.T) {
+	cmds := []string{"/lint", "/graph", "/analyze"}
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"/lint", true},
+		{"/lint file.go", true},
+		{"/lint   file.go extra", true},
+		{"  /graph --depth 2  ", true},
+		{"/analyze", true},
+		{"/lint2", false},
+		{"/nothing", false},
+		{"", false},
+		{"   ", false},
+	}
+	for _, c := range cases {
+		if got := isPluginCmd(c.input, cmds); got != c.want {
+			t.Errorf("isPluginCmd(%q) = %v, want %v", c.input, got, c.want)
+		}
+	}
+}

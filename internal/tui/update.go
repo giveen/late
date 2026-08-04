@@ -1667,12 +1667,18 @@ func isBinary(data []byte) bool {
 	return false
 }
 
-// isPluginCmd checks whether the given input matches a registered plugin command.
-// Plugin commands are matched exactly by their full string (e.g. "/query").
+// isPluginCmd checks whether the given input is a registered plugin command.
+// The command name is matched on the first whitespace-separated field, so
+// positional arguments are supported ("/lint file.go" matches "/lint").
 func isPluginCmd(input string, pluginCmds []string) bool {
 	input = strings.TrimSpace(input)
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := fields[0]
 	for _, pc := range pluginCmds {
-		if input == pc {
+		if cmd == pc {
 			return true
 		}
 	}
