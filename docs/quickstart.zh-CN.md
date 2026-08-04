@@ -281,7 +281,7 @@ late plugin update [<name>]
 | MCP 服务器 | `"mcp": { "servers": {...} }`         | 可调用的工具               |
 | 斜杠命令   | `"commands": ["/weather"]`            | 聊天中的 `/weather` 命令   |
 | 主题       | `"themes": ["themes/dark.json"]`      | 通过 `/themes` 切换        |
-| 钩子       | `"hooks": { "onInput": [...] }`       | 工具 / LLM 调用前后的中间件 |
+| 钩子       | `"hooks": { "onMessageSend": [...] }` | 工具 / LLM 调用前后的中间件 |
 | 内联工具   | `"tools": [{ "name": "...", ... }]`   | 智能体可直接调用的工具     |
 
 完整的 manifest 字段说明（包括旧版字符串形式的 `"commands"`、MCP 配置里的 `${VAR}` 环境变量展开、钩子的拒绝 / 修改语义，以及一份可复制粘贴的最小插件示例）请见 [`docs/plugin-sdk.md`](./plugin-sdk.md) 与 [`docs/plugin-example.md`](./plugin-example.md)。

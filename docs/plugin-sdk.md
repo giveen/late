@@ -554,12 +554,9 @@ enabledTools gating.
 | Hook            | Trigger                                                       | Input (stdin)                                          |
 | --------------- | ------------------------------------------------------------- | ------------------------------------------------------ |
 | `onSessionStart` | Once, when Late starts.                                      | empty                                                   |
-| `onTurnStart`    | Before each response cycle begins.                           | empty                                                   |
-| `onTurnEnd`      | After each response cycle ends.                              | empty                                                   |
 | `onToolCall`     | Before every tool runs. May mutate or veto (return `"blocked"`). | `{ "tool": "...", "arguments": {...}, "timestamp": "..." }` |
 | `onToolResult`   | After every tool runs. Observation only by default; can **mutate** the result before the LLM sees it (see [Tool-result mutation](#tool-result-mutation) below). | `{ "tool": "...", "result": "..." }`                    |
 | `onMessageSend`  | Sequential transform of outgoing user messages.              | the current message text                                 |
-| `onInput`        | Sequential transform of the user's intended message.         | the current message text                                 |
 
 Hooks are run inside the plugin's directory, so relative paths in the
 manifest are resolved against the package root. Paths that escape the

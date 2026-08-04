@@ -279,7 +279,7 @@ A `package.json` with a `"late"` field declares its surfaces:
 | MCP servers | `"mcp": { "servers": {...} }`       | Available tools           |
 | Commands    | `"commands": ["/weather"]`          | `/weather` in the chat    |
 | Themes      | `"themes": ["themes/dark.json"]`    | Switchable from `/themes` |
-| Hooks       | `"hooks": { "onInput": [...] }`     | Middleware on tool/LLM    |
+| Hooks       | `"hooks": { "onMessageSend": [...] }` | Middleware on tool/LLM    |
 | Tools       | `"tools": [{ "name": "...", ... }]` | Custom in-agent tools     |
 
 For the full manifest schema (including the older `"commands"` string array, env-var expansion in MCP configs, hook veto/mutate semantics, and a copy-pasteable reference plugin), see [`docs/plugin-sdk.md`](./plugin-sdk.md) and [`docs/plugin-example.md`](./plugin-example.md).

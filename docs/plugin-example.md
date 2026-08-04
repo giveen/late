@@ -25,7 +25,6 @@ late-codestyle/
 │   └── ocean.json
 ├── hooks/
 │   ├── veto.sh          # onToolCall — mutate or block dangerous calls
-│   ├── emoji.sh         # onInput    — sequential text transform
 │   ├── welcome.sh       # onSessionStart
 │   └── log-result.sh    # onToolResult — observation only
 └── scripts/
@@ -70,7 +69,6 @@ complete `late` object — the surrounding `package.json` is the usual
 
     "hooks": {
       "onToolCall":     ["hooks/veto.sh"],
-      "onInput":        ["hooks/emoji.sh"],
       "onSessionStart": ["hooks/welcome.sh"],
       "onToolResult":   ["hooks/log-result.sh"]
     },
@@ -276,12 +274,9 @@ different part of it.
 | Hook            | Read from stdin                                       | Write to stdout                                          |
 | --------------- | ----------------------------------------------------- | -------------------------------------------------------- |
 | `onSessionStart` | empty JSON                                            | ignored (fire-and-forget)                                |
-| `onTurnStart`    | empty JSON                                            | ignored                                                  |
-| `onTurnEnd`      | empty JSON                                            | ignored                                                  |
 | `onToolCall`     | `{ "tool", "arguments", "timestamp" }`                | JSON → mutate `arguments` · literal `"blocked"` → veto the call · empty/non-JSON → pass-through |
 | `onToolResult`   | `{ "tool", "result" }`                                | ignored (observation only)                               |
 | `onMessageSend`  | the current user message                              | replacement text (sequential)                             |
-| `onInput`        | the current user message (or previous hook's stdout)  | replacement text (sequential)                             |
 
 ### `hooks/veto.sh` — `onToolCall` (mutate OR veto)
 
@@ -318,20 +313,6 @@ Returning the literal string `"blocked"` aborts the chain (next()
 is skipped, the call returns an error to the agent). Returning any
 other JSON-valued stdout replaces `call.Function.Arguments` and
 continues the chain.
-
-### `hooks/emoji.sh` — `onInput` (sequential transform)
-
-```bash
-#!/usr/bin/env bash
-# Replace 🙂 → "happy face" in the user's pending message.
-# Stdin = the current input (or previous hook's output, since these run
-# in order across plugins).
-sed 's/🙂/happy face/g'
-```
-
-Because it's the only `onInput` hook this week, it always sees the
-original message. If another plugin registered an `onInput` first,
-its stdout would be **this** script's stdin.
 
 ### `hooks/welcome.sh` — `onSessionStart` (lifecycle)
 
@@ -412,7 +393,6 @@ A short rationale for the design choices that aren't obvious.
 | --------------------------------------- | -------------------------------------------------------------------- |
 | Two commands, two shapes                  | Demonstrates both wire-level dispatch modes.                          |
 | `onToolCall` **returns** JSON             | Demonstrates the gate-via-mutate contract — the most powerful hook.   |
-| `onInput` does not read the args          | Shows the chain is sequential: any subsequent hook sees my stdout.    |
 | `onToolResult` only writes to stderr      | Confirms there is no path back to the agent from this hook.           |
 | `late.tools[*]` instead of MCP for `lookup` | Demonstrates the simpler "no-server" path inline tools support.       |
 | `themes` with both palette and glamour   | Shows the two parts of a plugin theme (semantic colors + style overrides). |

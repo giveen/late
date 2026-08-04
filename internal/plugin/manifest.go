@@ -164,20 +164,17 @@ type MCPServerConfig struct {
 //   - onToolResult receives {"tool": "...", "result": "..."} via stdin.
 //     Read-only observation hook; the return value is currently logged
 //     but not used to mutate anything.
-//   - onSessionStart, onTurnStart, onTurnEnd fire before/after their
-//     respective lifecycle moments. They receive an empty JSON object
-//     on stdin. Errors and stderr are forwarded to the user's TUI.
-//   - onMessageSend and onInput form a sequential transform pipeline;
-//     each hook sees the previous hook's stdout. Smoke (no stdout) is
-//     treated as a no-op so a hook can be a no-op for some inputs.
+//   - onSessionStart fires once when Late starts. It receives an empty
+//     JSON object on stdin. Errors and stderr are forwarded to the user's
+//     TUI.
+//   - onMessageSend forms a sequential transform pipeline; each hook sees
+//     the previous hook's stdout. Smoke (no stdout) is treated as a no-op
+//     so a hook can be a no-op for some inputs.
 type LateHooksManifest struct {
 	OnToolCall     []string `json:"onToolCall,omitempty"`     // relative paths to scripts
 	OnToolResult   []string `json:"onToolResult,omitempty"`   // relative paths to scripts
 	OnSessionStart []string `json:"onSessionStart,omitempty"` // relative paths to scripts
-	OnTurnStart    []string `json:"onTurnStart,omitempty"`    // relative paths to scripts
-	OnTurnEnd      []string `json:"onTurnEnd,omitempty"`      // relative paths to scripts
 	OnMessageSend  []string `json:"onMessageSend,omitempty"`  // relative paths to scripts
-	OnInput        []string `json:"onInput,omitempty"`        // relative paths to scripts
 }
 
 // PackageJSON represents the minimal package.json fields we care about.

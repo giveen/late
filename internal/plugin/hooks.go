@@ -115,7 +115,7 @@ type hookData struct {
 // snapshotHooks returns every plugin that declares scripts for the given
 // hook type, sorted by plugin name (then per-script filename for
 // tie-breaking). The sort is the contract for sequential hook pipelines:
-// onInput / onMessageSend must run plugins in a deterministic order so
+// onMessageSend must run plugins in a deterministic order so
 // the stdout->stdin chain produces the same transformation every time.
 func (pm *PluginManager) snapshotHooks(t string) []hookData {
 	pm.mu.RLock()
@@ -134,14 +134,8 @@ func (pm *PluginManager) snapshotHooks(t string) []hookData {
 			scripts = p.Late.Hooks.OnToolResult
 		case "session-start":
 			scripts = p.Late.Hooks.OnSessionStart
-		case "turn-start":
-			scripts = p.Late.Hooks.OnTurnStart
-		case "turn-end":
-			scripts = p.Late.Hooks.OnTurnEnd
 		case "message-send":
 			scripts = p.Late.Hooks.OnMessageSend
-		case "input":
-			scripts = p.Late.Hooks.OnInput
 		default:
 			return nil
 		}
@@ -256,18 +250,6 @@ func (pm *PluginManager) CallOnSessionStartHooks() {
 	pm.fanout(context.Background(), "session-start", nil)
 }
 
-// CallOnTurnStartHooks fires OnTurnStart hooks for all enabled plugins in
-// parallel before the agent's response cycle begins. fire-and-forget.
-func (pm *PluginManager) CallOnTurnStartHooks() {
-	pm.fanout(context.Background(), "turn-start", nil)
-}
-
-// CallOnTurnEndHooks fires OnTurnEnd hooks for all enabled plugins in
-// parallel after the agent's response cycle ends. fire-and-forget.
-func (pm *PluginManager) CallOnTurnEndHooks() {
-	pm.fanout(context.Background(), "turn-end", nil)
-}
-
 // BuildToolResultMiddlewares returns post-execution ToolMiddlewares that
 // fire onToolResult hooks after each tool completes successfully.
 //
@@ -348,35 +330,6 @@ func (pm *PluginManager) CallOnToolResultHooks(ctx context.Context, tool string,
 		}
 	}
 	return result, nil
-}
-
-// CallOnInputHooks applies OnInput hooks sequentially (after sort by plugin
-// name) and returns the transformed message. Each hook sees the output of
-// the previous hook. If no hooks are registered, the input is returned
-// unchanged. The supplied context is forwarded to each hook so the TUI
-// can cancel a misbehaving plugin via its root context.
-func (pm *PluginManager) CallOnInputHooks(ctx context.Context, text string) string {
-	hooks := pm.snapshotHooks("input")
-	if len(hooks) == 0 || text == "" {
-		return text
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	current := text
-	for _, h := range hooks {
-		for _, script := range h.scripts {
-			out, err := runHook(ctx, h.pluginDir, script, []byte(current))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s/onInput/%s] %v\n", h.pluginName, script, err)
-				continue
-			}
-			if out != "" {
-				current = out
-			}
-		}
-	}
-	return current
 }
 
 // HookedMessage applies OnMessageSend hooks sequentially (after sort by
