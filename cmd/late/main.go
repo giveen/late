@@ -52,8 +52,14 @@ type pluginInlineTool struct {
 func (p pluginInlineTool) Name() string                { return p.name }
 func (p pluginInlineTool) Description() string         { return p.description }
 func (p pluginInlineTool) Parameters() json.RawMessage { return p.parameters }
+
+// RequiresConfirmation always returns true: an inline tool runs an
+// arbitrary plugin script, so it must go through the normal user
+// confirmation flow like skill scripts (tool.ScriptTool) and MCP tools
+// (tool adapter). The plugin docs promise exactly this — plugin-example.md:
+// "user confirmation still prompts the user".
 func (p pluginInlineTool) RequiresConfirmation(args json.RawMessage) bool {
-	return false
+	return true
 }
 func (p pluginInlineTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	return p.runner(ctx, client.ToolCall{
