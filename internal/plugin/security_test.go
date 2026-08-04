@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -233,16 +234,30 @@ func TestWatcher_StartRunsWithoutPanic(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestInstallFromGit_CleansUpOnCloneFailure verifies that a failed git clone
-// leaves no half-populated directory behind.
+// leaves no half-populated directory behind. A fake `git` on PATH creates
+// the target directory and then fails, deterministically exercising the
+// partial-clone cleanup with zero network access — the old version cloned a
+// nonexistent GitHub URL and could hang on DNS or prompt for credentials.
 func TestInstallFromGit_CleansUpOnCloneFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake git shell script only works on POSIX")
+	}
+	fakeBin := t.TempDir()
+	// argv: git clone --depth 1 <url> <target> — create the target dir
+	// (simulating a partial clone) then fail.
+	fakeGit := filepath.Join(fakeBin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nmkdir -p \"$5\"\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	targetRoot := t.TempDir()
 	pm := NewPluginManager(targetRoot)
 
-	// An obviously-invalid URL with a name we can look for
-	url := "https://github.com/does-not-exist-org-9999/repo-does-not-exist-9999.git"
+	url := "https://example.invalid/repo.git"
 	got, err := InstallFromGit(pm, url)
 	if err == nil {
-		t.Fatalf("expected InstallFromGit to fail with bad URL, got plugin %v", got)
+		t.Fatalf("expected InstallFromGit to fail with fake git, got plugin %v", got)
 	}
 	if got != nil {
 		t.Errorf("expected nil plugin on failure, got %v", got)
