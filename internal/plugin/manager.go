@@ -161,6 +161,15 @@ func (pm *PluginManager) Plugin(name string) *InstalledPlugin {
 func (pm *PluginManager) All() []*InstalledPlugin {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
+	return pm.allLocked()
+}
+
+// allLocked returns all loaded plugins, sorted by name. The caller MUST
+// already hold the manager lock (read or write). Exposed separately from
+// All so locked callers can iterate without a second RLock — a nested
+// RLock would deadlock against a queued writer (Go RWMutex blocks new
+// readers while a writer waits).
+func (pm *PluginManager) allLocked() []*InstalledPlugin {
 	all := make([]*InstalledPlugin, 0, len(pm.plugins))
 	for _, p := range pm.plugins {
 		all = append(all, p)

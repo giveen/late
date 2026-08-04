@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestHandleCommand_DispatchesHandler verifies that when a plugin declares
@@ -162,5 +163,59 @@ func TestGetInlineTools_AggregatesAcrossPlugins(t *testing.T) {
 	}
 	if !seen["alpha:summarize"] || !seen["beta:summarize"] {
 		t.Fatalf("expected alpha:summarize and beta:summarize, got %v", seen)
+	}
+}
+
+// TestHandleCommand_ConcurrentWithWriters guards against the nested-RLock
+// deadlock: HandleCommand used to call All() (which takes the same RLock)
+// while already holding RLock. A writer queued between the two read locks
+// wedges the second RLock forever (Go RWMutex blocks new readers while a
+// writer waits), stalling every lock user.
+//
+// The bad interleaving lands in a nanosecond window and can't be forced
+// without a seam inside HandleCommand, so this is a bounded stress test:
+// handlers and writers race under a watchdog. On the fixed code (single
+// RLock, allLocked() for the sorted copy) no interleaving can deadlock;
+// a regression stalls the watchdog and fails the test instead of hanging
+// the suite.
+func TestHandleCommand_ConcurrentWithWriters(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	dir := t.TempDir()
+	mf := &LateManifest{
+		Commands: LateCommands{
+			{Name: "/weather", Handler: "scripts/weather.sh"},
+		},
+	}
+	p := writeTestPlugin(t, dir, "weather-plugin", mf)
+	p.Path = filepath.Join(dir, "weather-plugin")
+	writeExecutableShell(t, filepath.Join(p.Path, "scripts/weather.sh"), `cat >/dev/null; echo ok`)
+	pm.Add(p)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 300; i++ {
+			if _, handled, err := pm.HandleCommand(context.Background(), "/weather", []string{"x"}); err != nil {
+				t.Errorf("HandleCommand: %v", err)
+				return
+			} else if !handled {
+				t.Error("expected handled=true")
+				return
+			}
+		}
+	}()
+	go func() {
+		// Writer traffic: continuously queue Lock() while the handler
+		// goroutine holds its read lock.
+		for i := 0; i < 5000; i++ {
+			pm.Add(&InstalledPlugin{Name: "temp", Path: dir, Late: &LateManifest{}})
+			pm.Remove("temp")
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("HandleCommand deadlocked against queued writers (nested RLock?)")
 	}
 }

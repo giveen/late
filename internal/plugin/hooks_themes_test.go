@@ -24,6 +24,9 @@ func writeExecutableShell(t *testing.T, path, body string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script test only runs on POSIX")
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir shell dir: %v", err)
+	}
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0755); err != nil {
 		t.Fatalf("write shell: %v", err)
 	}

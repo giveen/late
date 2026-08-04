@@ -30,10 +30,10 @@ func (pm *PluginManager) HandleCommand(ctx context.Context, cmdName string, args
 
 	normalized := strings.TrimPrefix(cmdName, "/")
 
-	// Reuse pm.All() so we don't reinvent the sort+copy here; All() takes
-	// the same RLock and returns a sorted slice for deterministic
-	// iteration order (and therefore a stable duplicate-detection log line).
-	plugins := pm.All()
+	// Reuse the sorted-copy helper so we don't reinvent the sort+copy here;
+	// we already hold RLock, so call allLocked() rather than All() — All()
+	// would take a second RLock that can deadlock against a queued writer.
+	plugins := pm.allLocked()
 
 	var (
 		matched       bool
