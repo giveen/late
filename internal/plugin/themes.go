@@ -35,6 +35,12 @@ func resolveThemePath(pluginDir, relPath string) (string, error) {
 	if relPath == "" {
 		return "", fmt.Errorf("empty theme path")
 	}
+	// Absolute paths are rejected outright: filepath.Join would silently
+	// flatten them ("/etc/passwd" becomes pluginDir/etc/passwd), masking a
+	// manifest that is not a plugin-relative path.
+	if filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("theme path %q is absolute; only plugin-relative paths are allowed", relPath)
+	}
 	abs := filepath.Clean(filepath.Join(pluginDir, relPath))
 	rel, err := filepath.Rel(pluginDir, abs)
 	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {

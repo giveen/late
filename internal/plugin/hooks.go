@@ -44,6 +44,12 @@ func resolveHookPath(pluginDir, relPath string) (string, error) {
 	if relPath == "" {
 		return "", fmt.Errorf("empty hook path")
 	}
+	// Absolute paths are rejected outright: filepath.Join would silently
+	// flatten them ("/etc/passwd" becomes pluginDir/etc/passwd), masking a
+	// manifest that is not a relative plugin-relative path.
+	if filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("hook path %q is absolute; only plugin-relative paths are allowed", relPath)
+	}
 	abs := filepath.Clean(filepath.Join(pluginDir, relPath))
 	rel, err := filepath.Rel(pluginDir, abs)
 	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {

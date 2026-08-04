@@ -111,12 +111,14 @@ func TestUpdateNpmHappyPath(t *testing.T) {
 	defer cleanup()
 
 	// Pre-install npm-shaped plugin: plugins/<name> is a symlink to
-	// plugins/node_modules/<name>; both directories exist with a real
-	// package.json + .late-plugin.json.
-	nodeModules := filepath.Join(pluginsDir, "node_modules", "foo")
+	// plugins/node_modules/@late/<name>; both directories exist with a
+	// real package.json + .late-plugin.json. Scoped source "@late/foo"
+	// installs under node_modules/@late/foo, which is where updateNpm
+	// re-resolves the package after `npm install`.
+	nodeModules := filepath.Join(pluginsDir, "node_modules", "@late", "foo")
 	linkTarget := filepath.Join(pluginsDir, "foo")
 	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
-		t.Fatalf("mkdir node_modules/foo: %v", err)
+		t.Fatalf("mkdir node_modules/@late/foo: %v", err)
 	}
 	writeMinimalPluginManifest(t, nodeModules, "foo", "1.0.0", "@late/foo", "npm")
 	if err := os.Symlink(nodeModules, linkTarget); err != nil {
@@ -274,9 +276,10 @@ func TestUpdateAllIteratesAndSkipsLocal(t *testing.T) {
 	_, cleanup := withExecSeams(t)
 	defer cleanup()
 
-	// Two npm-shape plugins and one local devlink.
+	// Two npm-shape plugins (scoped sources install under
+	// node_modules/@late/<name>) and one local devlink.
 	for _, name := range []string{"alpha", "beta"} {
-		nm := filepath.Join(pluginsDir, "node_modules", name)
+		nm := filepath.Join(pluginsDir, "node_modules", "@late", name)
 		link := filepath.Join(pluginsDir, name)
 		if err := os.MkdirAll(nm, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
@@ -340,16 +343,17 @@ func TestInstallDispatcherMarketplaceFallback(t *testing.T) {
 	srv := stubMarketplace(t, nil) // empty store → every name misses
 	mc := &MarketplaceClient{BaseURL: srv.URL, HTTPClient: srv.Client()}
 
-	// Override npm exec: it would fail because there's no @late/scoped-pkg.
+	// Override npm exec: it would fail because the package doesn't exist.
 	// We only need to assert Install attempted npm after the 404 fall-through,
-	// and that it bubbled up the exec error.
-	origRun := runCommand
-	defer func() { runCommand = origRun }()
-	runCommand = func(ctx context.Context, name string, args ...string) error {
+	// and that it bubbled up the exec error. A bare name (no "/") is what
+	// routes through the marketplace branch — scoped names go straight to npm.
+	origRun := runCommandOutput
+	defer func() { runCommandOutput = origRun }()
+	runCommandOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name != "npm" {
 			t.Fatalf("expected fallback to npm exec, got %q", name)
 		}
-		return errors.New("npm not configured in test")
+		return nil, errors.New("npm not configured in test")
 	}
 
 	pm := NewPluginManager(pluginsDir)
@@ -365,7 +369,7 @@ func TestInstallDispatcherMarketplaceFallback(t *testing.T) {
 		_, _ = io.ReadAll(r)
 	}()
 
-	if _, err := Install(pm, "@late/scoped-pkg", mc, false); err == nil {
+	if _, err := Install(pm, "scoped-pkg", mc, false); err == nil {
 		t.Fatalf("expected Install to surface the underlying exec error after marketplace miss")
 	} else if !strings.Contains(err.Error(), "npm not configured") {
 		t.Fatalf("expected underlying npm error to be wrapped, got %v", err)

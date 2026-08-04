@@ -374,9 +374,9 @@ func TestLoadThemeFile_RequiresName(t *testing.T) {
 func TestGetTheme_BareNameLookup(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())
 	dir := t.TempDir()
-	writeJSON(t, dir, "ocean.json", `{"name":"ocean","palette":{"bg":"#000"}}`)
 	mf := &LateManifest{Themes: []string{"ocean.json"}}
 	p := writeTestPlugin(t, dir, "theme-plugin", mf)
+	writeJSON(t, p.Path, "ocean.json", `{"name":"ocean","palette":{"bg":"#000"}}`)
 	pm.Add(p)
 
 	info, err := pm.GetTheme("ocean")
@@ -392,9 +392,9 @@ func TestGetTheme_BareNameLookup(t *testing.T) {
 func TestGetTheme_NamespacedLookup(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())
 	dir := t.TempDir()
-	writeJSON(t, dir, "theme.json", `{"name":"v1"}`)
 	mf := &LateManifest{Themes: []string{"theme.json"}}
 	p := writeTestPlugin(t, dir, "green", mf)
+	writeJSON(t, p.Path, "theme.json", `{"name":"v1"}`)
 	pm.Add(p)
 
 	info, err := pm.GetTheme("green:v1")
@@ -416,9 +416,9 @@ func TestGetTheme_EmptyReturnsNilNil(t *testing.T) {
 func TestAllThemes_AggregatesEnabledOnly(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())
 	dir := t.TempDir()
-	writeJSON(t, dir, "a.json", `{"name":"alpha"}`)
 	mf := &LateManifest{Themes: []string{"a.json"}}
 	p := writeTestPlugin(t, dir, "alpha", mf)
+	writeJSON(t, p.Path, "a.json", `{"name":"alpha"}`)
 	p.Enabled = false
 	pm.Add(p)
 

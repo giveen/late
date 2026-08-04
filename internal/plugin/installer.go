@@ -33,11 +33,9 @@ func InstallFromNpm(pm *PluginManager, pkgName string, projectLocal ...bool) (*I
 		return nil, fmt.Errorf("failed to create plugins directory: %w", err)
 	}
 
-	cmd := exec.Command("npm", "install", "--prefix", targetDir, pkgName)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("npm install failed: %w", err)
+	out, err := runCommandOutput(context.Background(), "npm", "install", "--prefix", targetDir, pkgName)
+	if err != nil {
+		return nil, fmt.Errorf("npm install failed: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
 	// npm installs into node_modules/<pkgname>
@@ -332,7 +330,7 @@ func Update(pm *PluginManager, name string, mc *MarketplaceClient) (*InstalledPl
 	sourceType := old.SourceType
 
 	if sourceType == "local" {
-		return nil, fmt.Errorf("update: %s is a dev symlink; edit the source folder then run `late plugin remove && late plugin link`", name)
+		return nil, fmt.Errorf("update: %s is a local dev symlink; edit the source folder then run `late plugin remove && late plugin link`", name)
 	}
 	if source == "" {
 		return nil, fmt.Errorf("update: no install source recorded for %s; reinstall explicitly with `late plugin install <src>`", name)
@@ -465,7 +463,11 @@ func updateNpm(pm *PluginManager, old *InstalledPlugin, source, targetDir string
 	if err := os.MkdirAll(filepath.Dir(linkDir), 0755); err != nil {
 		return nil, fmt.Errorf("update: cannot prepare symlink parent: %w", err)
 	}
-	rel, err := filepath.Rel(targetDir, npmDir)
+	// Use relative symlink for portability. The symlink resolves relative
+	// to its OWN parent directory, not the plugins root — for scoped
+	// packages (@scope/name) the link is nested one level deeper, so
+	// compute from linkDir's parent (mirrors InstallFromNpm).
+	rel, err := filepath.Rel(filepath.Dir(linkDir), npmDir)
 	if err != nil {
 		return nil, fmt.Errorf("update: cannot compute rel symlink: %w", err)
 	}
