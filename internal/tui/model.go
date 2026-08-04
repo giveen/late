@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"late/internal/common"
+	"late/internal/config"
 	"os"
 
 	"charm.land/bubbles/v2/filepicker"
@@ -14,7 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
+func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *config.Config) Model {
 	ti := textarea.New()
 	ti.Placeholder = "Ask Late anything..."
 	ti.Focus()
@@ -85,6 +86,7 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer) Model {
 		ShowCWD:             true,
 		cachedRendererWidth: -1, // Force first creation
 		Pastes:              make(map[string]string),
+		AppConfig:           cfg,
 	}
 
 	fp := filepicker.New()

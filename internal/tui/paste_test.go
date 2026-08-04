@@ -20,25 +20,25 @@ func (m *mockOrchestrator) Submit(text string, images []string) error {
 	m.submittedText = text
 	return nil
 }
-func (m *mockOrchestrator) Execute(text string) (string, error) { return "", nil }
-func (m *mockOrchestrator) Reset() error                         { return nil }
-func (m *mockOrchestrator) Rewind(index int) error                { return nil }
-func (m *mockOrchestrator) Cancel()                              {}
-func (m *mockOrchestrator) IsStopRequested() bool                { return false }
-func (m *mockOrchestrator) Events() <-chan common.Event          { return nil }
-func (m *mockOrchestrator) History() []client.ChatMessage        { return nil }
-func (m *mockOrchestrator) Context() context.Context             { return context.Background() }
-func (m *mockOrchestrator) Middlewares() []common.ToolMiddleware { return nil }
-func (m *mockOrchestrator) Registry() *common.ToolRegistry       { return nil }
-func (m *mockOrchestrator) SystemPrompt() string                 { return "" }
+func (m *mockOrchestrator) Execute(text string) (string, error)      { return "", nil }
+func (m *mockOrchestrator) Reset() error                             { return nil }
+func (m *mockOrchestrator) Rewind(index int) error                   { return nil }
+func (m *mockOrchestrator) Cancel()                                  {}
+func (m *mockOrchestrator) IsStopRequested() bool                    { return false }
+func (m *mockOrchestrator) Events() <-chan common.Event              { return nil }
+func (m *mockOrchestrator) History() []client.ChatMessage            { return nil }
+func (m *mockOrchestrator) Context() context.Context                 { return context.Background() }
+func (m *mockOrchestrator) Middlewares() []common.ToolMiddleware     { return nil }
+func (m *mockOrchestrator) Registry() *common.ToolRegistry           { return nil }
+func (m *mockOrchestrator) SystemPrompt() string                     { return "" }
 func (m *mockOrchestrator) ToolDefinitions() []client.ToolDefinition { return nil }
-func (m *mockOrchestrator) Children() []common.Orchestrator      { return nil }
-func (m *mockOrchestrator) Parent() common.Orchestrator          { return nil }
-func (m *mockOrchestrator) SetMaxTurns(int)                      {}
-func (m *mockOrchestrator) RefreshContextSize(context.Context)   {}
-func (m *mockOrchestrator) MaxTokens() int                       { return 100 }
-func (m *mockOrchestrator) SupportsVision() bool                 { return false }
-func (m *mockOrchestrator) QueuedMessages() []string             { return nil }
+func (m *mockOrchestrator) Children() []common.Orchestrator          { return nil }
+func (m *mockOrchestrator) Parent() common.Orchestrator              { return nil }
+func (m *mockOrchestrator) SetMaxTurns(int)                          {}
+func (m *mockOrchestrator) RefreshContextSize(context.Context)       {}
+func (m *mockOrchestrator) MaxTokens() int                           { return 100 }
+func (m *mockOrchestrator) SupportsVision() bool                     { return false }
+func (m *mockOrchestrator) QueuedMessages() []string                 { return nil }
 
 type mockKey struct {
 	code rune
@@ -52,7 +52,7 @@ func (k mockKey) Key() tea.Key {
 
 func TestPastePlaceholderReplacement(t *testing.T) {
 	orch := &mockOrchestrator{}
-	model := NewModel(orch, nil)
+	model := NewModel(orch, nil, nil)
 
 	// Simulate PasteMsg of 5 lines
 	pasteText := "line1\nline2\nline3\nline4\nline5"
@@ -97,9 +97,30 @@ func TestPastePlaceholderReplacement(t *testing.T) {
 	}
 }
 
+func TestStartPromptMsgSubmitsPrompt(t *testing.T) {
+	orch := &mockOrchestrator{}
+	model := NewModel(orch, nil, nil)
+
+	res, cmd := model.Update(StartPromptMsg("fix the tests"))
+	model = res.(Model)
+	if cmd == nil {
+		t.Fatal("expected command to submit the startup prompt")
+	}
+
+	res, _ = model.Update(cmd())
+	model = res.(Model)
+
+	if orch.submittedText != "fix the tests" {
+		t.Fatalf("expected startup prompt to be submitted, got %q", orch.submittedText)
+	}
+	if model.Input.Value() != "> " {
+		t.Fatalf("expected input to be cleared after submission, got %q", model.Input.Value())
+	}
+}
+
 func TestPasteBinaryIgnored(t *testing.T) {
 	orch := &mockOrchestrator{}
-	model := NewModel(orch, nil)
+	model := NewModel(orch, nil, nil)
 
 	// Set initial state
 	model.Input.SetValue("> hello")
@@ -123,7 +144,7 @@ func TestPasteBinaryIgnored(t *testing.T) {
 
 func TestPastePlaceholderSubmitNoCollision(t *testing.T) {
 	orch := &mockOrchestrator{}
-	model := NewModel(orch, nil)
+	model := NewModel(orch, nil, nil)
 
 	// Two multi-line pastes. The second paste's CONTENT contains a string
 	// that looks exactly like a placeholder; it must survive submission
@@ -181,4 +202,3 @@ func TestIsBinary(t *testing.T) {
 		})
 	}
 }
-

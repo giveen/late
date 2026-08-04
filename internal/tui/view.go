@@ -51,6 +51,22 @@ func (m Model) View() tea.View {
 			Width(m.Width).
 			Render(pickerHints)
 	}
+	if m.Mode == ViewModelPicker {
+		hUpDn := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("↑/↓"), statusTextStyle.Render(" Select Agent "))
+		hLfRt := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("←/→"), statusTextStyle.Render(" Choose Model "))
+		hEnter := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Enter"), statusTextStyle.Render(" Save "))
+		hEsc := lipgloss.JoinHorizontal(lipgloss.Left, statusKeyStyle.Render("Esc"), statusTextStyle.Render(" Cancel "))
+		pickerHints := lipgloss.JoinHorizontal(lipgloss.Left, hUpDn, statusBg("  "), hLfRt, statusBg("  "), hEnter, statusBg("  "), hEsc)
+
+		iStr = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(lipgloss.Color("#232329")).
+			BorderBackground(appBgColor).
+			Background(appBgColor).
+			Width(m.Width).
+			Padding(1, 2).
+			Render(pickerHints)
+	}
 
 	aStr := m.autocompleteView()
 	sStr := m.statusBarView()
@@ -132,7 +148,7 @@ func (m *Model) autocompleteView() string {
 		}
 
 		nameStr := nameStyle.Render(fmt.Sprintf("%s%-9s", prefix, item.Name))
-		
+
 		descWidth := (w - 4) - lipgloss.Width(nameStr)
 		if descWidth < 0 {
 			descWidth = 0
@@ -305,6 +321,40 @@ func (m *Model) statusBarView() string {
 		return ""
 	}
 
+	if m.Mode == ViewModelPicker {
+		bullet := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Render("◆")
+		label := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("models")
+		leftSection := bullet + statusBg(" ") + label
+
+		status := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("Configuring active agent models")
+		hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
+		if hasToast {
+			if m.ToastWarning {
+				status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
+			} else {
+				status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+			}
+		}
+
+		rightSection := lipgloss.NewStyle().Foreground(subtextColor).Background(appBgColor).Render("enter Save • esc Cancel")
+
+		usableW := w - 2
+		leftWidth := lipgloss.Width(leftSection)
+		rightWidth := lipgloss.Width(rightSection)
+		statusWidth := lipgloss.Width(status)
+
+		spaceWidth := usableW - leftWidth - rightWidth - statusWidth - 3
+		if spaceWidth < 0 {
+			spaceWidth = 0
+		}
+		space := statusBg(strings.Repeat(" ", spaceWidth))
+
+		parts := []string{leftSection, statusBg("   "), status, space, rightSection}
+		content := lipgloss.JoinHorizontal(lipgloss.Left, parts...)
+		paddedContent := statusBg(" ") + content + statusBg(" ")
+		return statusBarBaseStyle.Width(w).Render(paddedContent)
+	}
+
 	s := m.GetAgentState(m.Focused.ID())
 
 	var leftSection string
@@ -362,7 +412,11 @@ func (m *Model) statusBarView() string {
 	var status string
 	hasToast := m.ToastMessage != "" && time.Now().UnixMilli() < m.ToastExpireTime
 	if hasToast {
-		status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+		if m.ToastWarning {
+			status = statusWarningStyle.Render("⚠ " + m.ToastMessage)
+		} else {
+			status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render("✓ " + m.ToastMessage)
+		}
 	} else if statusText != "" && statusText != "Working..." && statusText != "Ready" && statusText != "Closed" {
 		if s.State == StateConfirmTool {
 			status = statusWarningStyle.Render(statusText)
@@ -461,8 +515,14 @@ func (m *Model) statusBarView() string {
 				maxStatusW = 0
 			}
 			if hasToast {
-				truncated := m.truncateWithEllipsis("✓ "+m.ToastMessage, maxStatusW)
-				status = lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true).Render(truncated)
+				prefix := "✓ "
+				style := lipgloss.NewStyle().Foreground(primaryColor).Background(appBgColor).Bold(true)
+				if m.ToastWarning {
+					prefix = "⚠ "
+					style = statusWarningStyle
+				}
+				truncated := m.truncateWithEllipsis(prefix+m.ToastMessage, maxStatusW)
+				status = style.Render(truncated)
 			} else {
 				truncated := m.truncateWithEllipsis(statusText, maxStatusW)
 				if s.State == StateConfirmTool {
@@ -498,6 +558,11 @@ func (m *Model) statusBarView() string {
 
 func (m *Model) updateViewport() {
 	if m.Focused == nil {
+		return
+	}
+
+	if m.Mode == ViewModelPicker {
+		m.renderModelPickerView()
 		return
 	}
 
@@ -553,7 +618,7 @@ func (m *Model) updateViewport() {
 
 Here is a list of available keyboard shortcuts:
 
-  **ctrl+a**        Toggle File Picker (attach files to prompt)
+  **ctrl+o**        Toggle File Picker (attach files to prompt)
   **ctrl+x**        Clear attached files
   **ctrl+g** / **esc**   Interrupt / stop active agent
   **tab**           Switch focus between active subagents
@@ -612,8 +677,12 @@ Press **ctrl+h** or **esc** to return to the chat.`
 	s.LastRenderTime = time.Now().UnixMilli()
 
 	// If history was reset or messages were removed, clear the cache
+	historyCacheChanged := false
 	if len(history) < len(s.RenderedHistory) {
 		s.RenderedHistory = nil
+		s.CachedHistoryLines = nil
+		s.CachedHistoryBlocks = nil
+		historyCacheChanged = true
 	}
 
 	// Render only new messages and add to cache
@@ -671,24 +740,26 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		}
 		// We always append to keep cache in sync with history length
 		s.RenderedHistory = append(s.RenderedHistory, rendered)
+		historyCacheChanged = true
 	}
 
-	// Build the full block list from cached history + active content
-	var blocks []string
-	s.RenderBlocks = nil
-	currentLine := 0
-
-	for idx, r := range s.RenderedHistory {
-		if r != "" {
-			blocks = append(blocks, r)
+	// Rebuild completed-history line and copy metadata only when history
+	// changes. Streaming frames must not walk the entire completed chat.
+	if historyCacheChanged {
+		var historyBlocks []string
+		var historyRenderBlocks []RenderBlock
+		currentLine := 0
+		for idx, r := range s.RenderedHistory {
+			if r == "" {
+				continue
+			}
+			historyBlocks = append(historyBlocks, r)
 			linesCount := strings.Count(r, "\n") + 1
-
 			copyText := history[idx].Content.String()
 			if history[idx].Role == "user" {
 				copyText = history[idx].Content.UIString()
 			}
-
-			s.RenderBlocks = append(s.RenderBlocks, RenderBlock{
+			historyRenderBlocks = append(historyRenderBlocks, RenderBlock{
 				MessageIndex: idx,
 				Content:      copyText,
 				StartLine:    currentLine,
@@ -696,6 +767,50 @@ Press **ctrl+h** or **esc** to return to the chat.`
 			})
 			currentLine += linesCount
 		}
+		if len(historyBlocks) == 0 {
+			s.CachedHistoryLines = nil
+		} else {
+			s.CachedHistoryLines = strings.Split(strings.Join(historyBlocks, "\n"), "\n")
+		}
+		s.CachedHistoryBlocks = historyRenderBlocks
+	}
+
+	streaming := s.State == StateStreaming || s.State == StateThinking
+	if streaming && !s.StreamingWindow && !m.Viewport.AtBottom() {
+		// The user is reading older history. Keep that viewport stable and
+		// avoid rebuilding the full chat for every token. Streaming state
+		// continues to accumulate and catches up when they return to bottom.
+		return
+	}
+
+	// During streaming, keep only a few screens of completed history in the
+	// viewport. bubbles/viewport scans every supplied line on SetContent, so
+	// giving it the full chat on every token makes frame cost grow forever.
+	var blocks []string
+	s.RenderBlocks = nil
+	currentLine := 0
+	windowStart := 0
+	if streaming && (s.StreamingWindow || m.Viewport.AtBottom()) {
+		windowSize := max(m.Viewport.Height()*2, 40)
+		windowStart = max(0, len(s.CachedHistoryLines)-windowSize)
+		s.StreamingWindow = true
+		s.StreamingWindowStart = windowStart
+	} else {
+		s.StreamingWindow = false
+		s.StreamingWindowStart = 0
+	}
+	historyLines := s.CachedHistoryLines[windowStart:]
+	if len(historyLines) > 0 {
+		blocks = append(blocks, strings.Join(historyLines, "\n"))
+		currentLine = len(historyLines)
+	}
+	for _, block := range s.CachedHistoryBlocks {
+		if block.EndLine < windowStart {
+			continue
+		}
+		block.StartLine = max(block.StartLine-windowStart, 0)
+		block.EndLine -= windowStart
+		s.RenderBlocks = append(s.RenderBlocks, block)
 	}
 
 	// Render streaming content if active
@@ -704,7 +819,8 @@ Press **ctrl+h** or **esc** to return to the chat.`
 		var activeParts []string
 		if s.StreamingState.ReasoningContent != "" {
 			activeParts = append(activeParts, thoughtHeaderStyle.Width(msgWidth+1).Render("Thoughts:"))
-			activeParts = append(activeParts, thinkingStyle.Width(msgWidth-2).Render(s.StreamingState.ReasoningContent))
+			reasoning := streamingTextWindow(s.StreamingState.ReasoningContent, msgWidth, m.Viewport.Height()*3)
+			activeParts = append(activeParts, thinkingStyle.Width(msgWidth-2).Render(reasoning))
 		}
 		if s.StreamingState.Content != "" {
 			innerWidth := m.Viewport.Width() - AIMsgOverhead
@@ -737,6 +853,10 @@ Press **ctrl+h** or **esc** to return to the chat.`
 					s.StreamingStyledCache += "\n"
 				}
 				s.StreamingStyledCache += styled
+				s.StreamingStyledCache = lastRenderedLines(
+					s.StreamingStyledCache,
+					max(m.Viewport.Height()*2, 40),
+				)
 			}
 			s.StreamingChunkCount = len(chunks)
 
@@ -746,6 +866,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 				// Trim leading newlines from tail to prevent "jumping" when a new paragraph starts
 				t := strings.TrimLeft(tail, "\n")
 				if t != "" {
+					t = streamingTextWindow(t, msgWidth, m.Viewport.Height()*2)
 					// Pulsing Caret for streaming effect
 					ms := float64(time.Now().UnixNano()) / 1e6
 					caretOpacity := (math.Sin(ms/150.0) + 1.0) / 2.0
@@ -767,6 +888,7 @@ Press **ctrl+h** or **esc** to return to the chat.`
 				assembled = tailStyled
 			}
 			if assembled != "" {
+				assembled = lastRenderedLines(assembled, max(m.Viewport.Height()*2, 40))
 				activeParts = append(activeParts, assembled)
 			}
 		}
@@ -921,6 +1043,75 @@ Press **ctrl+h** or **esc** to return to the chat.`
 	if atBottom {
 		m.Viewport.GotoBottom()
 	}
+}
+
+// streamingTextWindow bounds styling work for an incomplete streaming block.
+// The complete source remains in StreamingState and is rendered normally when
+// the turn finishes.
+func streamingTextWindow(content string, width, lines int) string {
+	limit := max(width*lines, 4096)
+	if len(content) <= limit {
+		return content
+	}
+	start := len(content) - limit
+	for start < len(content) && start > 0 && content[start]&0xc0 == 0x80 {
+		start++
+	}
+	return "…\n" + content[start:]
+}
+
+// lastRenderedLines returns a suffix without splitting or copying every line
+// in a potentially very large ANSI-rendered response.
+func lastRenderedLines(content string, count int) string {
+	if count <= 0 {
+		return ""
+	}
+	end := len(content)
+	for i := 0; i < count; i++ {
+		pos := strings.LastIndexByte(content[:end], '\n')
+		if pos < 0 {
+			return content
+		}
+		end = pos
+	}
+	return content[end+1:]
+}
+
+func (m *Model) restoreFullHistoryForScroll() {
+	s := m.GetAgentState(m.Focused.ID())
+	if !s.StreamingWindow {
+		return
+	}
+
+	// Expand the current window in place. In particular, retain the active
+	// streaming block: rebuilding from CachedHistoryLines alone drops it and
+	// moves the apparent bottom upward by the height of the active response.
+	windowStart := s.StreamingWindowStart
+	windowOffset := m.Viewport.YOffset()
+	windowContent := m.Viewport.GetContent()
+	fullContent := windowContent
+	if windowStart > 0 {
+		fullContent = strings.Join(s.CachedHistoryLines[:windowStart], "\n") +
+			"\n" + windowContent
+	}
+	m.Viewport.SetContent(fullContent)
+	m.Viewport.SetYOffset(windowStart + windowOffset)
+
+	// Completed blocks regain their full-history coordinates. Preserve active
+	// blocks from the window and translate them by the prepended line count.
+	fullRenderBlocks := append([]RenderBlock(nil), s.CachedHistoryBlocks...)
+	for _, block := range s.RenderBlocks {
+		if block.MessageIndex >= 0 {
+			continue
+		}
+		block.StartLine += windowStart
+		block.EndLine += windowStart
+		fullRenderBlocks = append(fullRenderBlocks, block)
+	}
+	s.RenderBlocks = fullRenderBlocks
+	s.StreamingWindow = false
+	s.StreamingWindowStart = 0
+	s.LastTotalContent = ""
 }
 
 func (m *Model) renderAnimatedTag(text string, baseStyle lipgloss.Style, width int, active bool) string {
@@ -1419,7 +1610,6 @@ func (m *Model) renderRewindView() {
 	m.Viewport.SetContent(paddedContent)
 }
 
-
 // overlayCentered places the dialog string centered over the background string,
 // matching the viewport dimensions. The dialog is sized to fit its content.
 func overlayCentered(background, dialog string, vpWidth, vpHeight int) string {
@@ -1502,4 +1692,140 @@ func splitMarkdownChunks(content string) (complete []string, tail string) {
 	}
 	tail = content[lastSplit:]
 	return
+}
+
+// renderModelPickerView renders the active agent models configuring list in the viewport.
+func (m *Model) renderModelPickerView() {
+	s := m.GetAgentState(m.Focused.ID())
+	s.LastTotalContent = ""
+
+	msgWidth := m.Viewport.Width() - 2
+	if msgWidth < 1 {
+		msgWidth = 80
+	}
+
+	var lines []string
+	header := lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true).
+		Background(appBgColor).
+		PaddingLeft(1).
+		Render("── Configure Agent Models ──────────────────────────")
+	lines = append(lines, header, "")
+
+	if len(m.ModelPickerModels) <= 1 && (m.AppConfig == nil || len(m.AppConfig.Models) == 0) {
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(warningColor).
+			Background(appBgColor).
+			PaddingLeft(2).
+			Render("No models configured in ~/.config/late/config.json"))
+		lines = append(lines, "", lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			PaddingLeft(2).
+			Render("Please add a 'models' array to your config file first."))
+	} else {
+		// Instructions
+		lines = append(lines, lipgloss.NewStyle().
+			Foreground(subtextColor).
+			Background(appBgColor).
+			PaddingLeft(2).
+			Render("Use ↑/↓ to choose an agent, and ←/→ to select a model."), "")
+
+		// Print agents and their models
+		for aIdx, agentName := range m.ModelPickerAgents {
+			agentLabel := agentName
+			if agentName == "orchestrator" {
+				agentLabel = "main/orchestrator"
+			}
+
+			// Highlight the active row/agent
+			agentStyle := lipgloss.NewStyle().Foreground(textColor)
+			prefix := "  "
+			if aIdx == m.ModelPickerAgentIndex {
+				prefix = "▸ "
+				agentStyle = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+			}
+
+			// Render agent name, right-padded
+			agentNamePart := prefix + agentLabel
+			agentNameStr := fmt.Sprintf("%-22s", agentNamePart)
+			agentNameRendered := agentStyle.Background(appBgColor).Render(agentNameStr)
+
+			// Build the model choices list for this agent
+			var modelChoices []string
+			selectedIdx := m.ModelPickerAgentSelections[agentName]
+
+			for mIdx, modelRef := range m.ModelPickerModels {
+				modelLabel := modelRef
+				if modelRef != "default" && m.AppConfig != nil {
+					for _, setting := range m.AppConfig.Models {
+						if setting.Reference() == modelRef {
+							modelLabel = setting.Model
+							if setting.ID != "" {
+								modelLabel += " (" + setting.ID + ")"
+							}
+							break
+						}
+					}
+				}
+
+				var optStr string
+				if mIdx == selectedIdx {
+					// This option is selected
+					if aIdx == m.ModelPickerAgentIndex {
+						// Row is active: highlight selected model with primary color
+						optStr = lipgloss.NewStyle().
+							Foreground(appBgColor).
+							Background(primaryColor).
+							Bold(true).
+							Padding(0, 1).
+							Render(modelLabel)
+					} else {
+						// Row is inactive: highlight selected model with secondary color
+						optStr = lipgloss.NewStyle().
+							Foreground(appBgColor).
+							Background(secondaryColor).
+							Bold(true).
+							Padding(0, 1).
+							Render(modelLabel)
+					}
+				} else {
+					// Not selected
+					optStr = lipgloss.NewStyle().
+						Foreground(subtextColor).
+						Background(appBgColor).
+						Padding(0, 1).
+						Render(modelLabel)
+				}
+				modelChoices = append(modelChoices, optStr)
+			}
+
+			rowContent := agentNameRendered + strings.Join(modelChoices, "  ")
+
+			// Wrap row in a box style if it's active for extra pop
+			rowStyle := lipgloss.NewStyle().Background(appBgColor)
+			if aIdx == m.ModelPickerAgentIndex {
+				rowStyle = lipgloss.NewStyle().Background(thoughtBgColor)
+			}
+
+			lines = append(lines, rowStyle.Render(rowContent))
+		}
+	}
+
+	lines = append(lines, "", "")
+
+	// Footer hints
+	footer := lipgloss.NewStyle().
+		Foreground(subtextColor).
+		Background(appBgColor).
+		PaddingLeft(2).
+		Render("Press [Enter] to save, [Esc] to cancel.")
+	lines = append(lines, footer)
+
+	paddedContent := lipgloss.NewStyle().
+		Width(m.Viewport.Width()).
+		Background(appBgColor).
+		Render(strings.Join(lines, "\n"))
+	m.Viewport.SetContent(paddedContent)
 }

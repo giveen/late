@@ -25,6 +25,22 @@ type SubagentSettings struct {
 	Model   string
 }
 
+type ModelSetting struct {
+	ID    string `json:"id,omitempty"`
+	URL   string `json:"url"`
+	Key   string `json:"key"`
+	Model string `json:"model"`
+}
+
+// Reference returns the stable value stored in agent_models. Model is retained
+// as a fallback for configurations created before model IDs were introduced.
+func (m ModelSetting) Reference() string {
+	if m.ID != "" {
+		return m.ID
+	}
+	return m.Model
+}
+
 const (
 	configDirPerm  os.FileMode = 0o700
 	configFilePerm os.FileMode = 0o600
@@ -46,6 +62,9 @@ type Config struct {
 	SubagentModel   string `json:"subagent_model,omitempty"`
 
 	SkillsDir string `json:"skills_dir,omitempty"`
+
+	Models      []ModelSetting    `json:"models,omitempty"`
+	AgentModels map[string]string `json:"agent_models,omitempty"`
 }
 
 func defaultConfig() Config {
@@ -239,4 +258,84 @@ func tightenPermission(path string, required os.FileMode) error {
 	}
 
 	return os.Chmod(path, required)
+}
+
+// GetModelForAgent returns the ModelSetting for a given agent type.
+// If not found, it returns false.
+func (cfg *Config) GetModelForAgent(agentType string) (ModelSetting, bool) {
+	if cfg == nil || cfg.AgentModels == nil || cfg.Models == nil {
+		return ModelSetting{}, false
+	}
+	modelRef, exists := cfg.AgentModels[agentType]
+	if !exists {
+		return ModelSetting{}, false
+	}
+	// Prefer stable IDs so providers exposing the same model name remain
+	// distinguishable.
+	for _, m := range cfg.Models {
+		if m.ID != "" && m.ID == modelRef {
+			return m, true
+		}
+	}
+	// Backward compatibility for existing name-based agent_models entries.
+	for _, m := range cfg.Models {
+		if m.Model == modelRef {
+			return m, true
+		}
+	}
+	return ModelSetting{}, false
+}
+
+// SaveConfig atomically writes the configuration back to config.json.
+func SaveConfig(cfg *Config) error {
+	lateConfigDir, err := pathutil.LateConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := tightenConfigDirPermission(lateConfigDir); err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(lateConfigDir, "config.json")
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpFile, err := os.CreateTemp(lateConfigDir, ".config-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary config: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmpFile.Chmod(configFilePerm); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to secure temporary config: %w", err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write temporary config: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to sync temporary config: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary config: %w", err)
+	}
+	if err := os.Rename(tmpPath, configPath); err != nil {
+		return fmt.Errorf("failed to replace config: %w", err)
+	}
+	return ensureSecureConfigPermissions(lateConfigDir, configPath)
+}
+
+func tightenConfigDirPermission(configDir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if err := tightenPermission(configDir, configDirPerm); err != nil {
+		return fmt.Errorf("failed to set config directory permissions: %w", err)
+	}
+	return nil
 }
