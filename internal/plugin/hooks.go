@@ -322,10 +322,18 @@ func (pm *PluginManager) CallOnToolResultHooks(ctx context.Context, tool string,
 	}
 	for _, h := range hooks {
 		for _, script := range h.scripts {
-			payload, _ := json.Marshal(map[string]any{
+			// result is plain text, not JSON — marshal it as a string so the
+			// payload is always valid JSON. json.RawMessage would embed the
+			// bytes verbatim and fail marshal on non-JSON results, silently
+			// leaving the hook with empty stdin.
+			payload, err := json.Marshal(map[string]any{
 				"tool":   tool,
-				"result": json.RawMessage(result),
+				"result": string(result),
 			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s/onToolResult/%s] marshal payload: %v\n", h.pluginName, script, err)
+				continue
+			}
 			out, err := runHook(ctx, h.pluginDir, script, payload)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[%s/onToolResult/%s] %v\n", h.pluginName, script, err)

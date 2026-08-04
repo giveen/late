@@ -121,6 +121,50 @@ func TestBuildToolResultMiddlewares_PostExecMutate(t *testing.T) {
 	}
 }
 
+// TestCallOnToolResultHooks_PlainTextResultPayload: a plain-text (non-JSON)
+// tool result must still reach the hook as a valid JSON payload
+// {"tool": ..., "result": "..."}. Wrapping the result in json.RawMessage
+// made json.Marshal fail on non-JSON text, and the ignored error left the
+// hook with empty stdin.
+func TestCallOnToolResultHooks_PlainTextResultPayload(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	pluginDir := t.TempDir()
+	capture := filepath.Join(pluginDir, "stdin-capture.txt")
+	writeExecutableShell(t, filepath.Join(pluginDir, "capture.sh"), "cat > "+capture)
+
+	mf := &LateManifest{
+		Hooks: &LateHooksManifest{
+			OnToolResult: []string{"capture.sh"},
+		},
+	}
+	p := writeTestPlugin(t, pluginDir, "capture-plugin", mf)
+	p.Path = pluginDir
+	pm.Add(p)
+
+	result := "Command output:\nline two with \"quotes\" and \\backslash"
+	if _, err := pm.CallOnToolResultHooks(context.Background(), "bash", []byte(result)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	var payload struct {
+		Tool   string `json:"tool"`
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("hook did not receive valid JSON payload, got %q: %v", got, err)
+	}
+	if payload.Tool != "bash" {
+		t.Errorf("tool = %q, want %q", payload.Tool, "bash")
+	}
+	if payload.Result != result {
+		t.Errorf("result = %q, want %q", payload.Result, result)
+	}
+}
+
 // TestBuildToolResultMiddlewares_SkipOnError: if the inner runner returns
 // an error, the middleware does NOT call onToolResult hooks.
 func TestBuildToolResultMiddlewares_SkipOnError(t *testing.T) {
