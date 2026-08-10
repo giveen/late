@@ -843,7 +843,11 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 			if cmd == "/new" {
 				m.Input.Reset()
 				m.Input.SetValue("> ")
-				m.Focused.Reset()
+				if err := m.Root.Reset(); err != nil {
+					m.Err = fmt.Errorf("failed to start new conversation: %w", err)
+					return m, nil
+				}
+				m.Focused = m.Root
 				m.Pastes = make(map[string]string)
 				for _, state := range m.AgentStates {
 					state.RenderedHistory = nil
@@ -854,7 +858,7 @@ func (m Model) updateChat(msg tea.Msg) (Model, tea.Cmd) {
 				}
 				m.LastFocusedID = ""
 				m.updateViewport()
-				m.ToastMessage = "conversation cleared"
+				m.ToastMessage = "new conversation started"
 				m.ToastWarning = false
 				m.ToastExpireTime = time.Now().UnixMilli() + 3000
 				clearCmd := tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
