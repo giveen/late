@@ -181,11 +181,13 @@ func handlePluginList(pm *PluginManager) {
 // Supports --project flag to install into the project-local .late/plugins/ directory.
 func handlePluginInstall(pm *PluginManager, args []string) {
 	project, source := parseProjectFlag(args)
+	if project && !pm.HasProjectDir() {
+		fmt.Fprintln(os.Stderr, "Error: --project requires a .late/plugins/ directory in the current project")
+		fmt.Fprintln(os.Stderr, "Create it first: mkdir -p .late/plugins")
+		return
+	}
 	if source == "" {
 		fmt.Fprintln(os.Stderr, "Error: missing plugin source (npm package name, git URL, or local path)")
-		if project && !pm.HasProjectDir() {
-			fmt.Fprintln(os.Stderr, "Note: --project flag requires a .late/plugins/ directory (create it first)")
-		}
 		fmt.Fprintln(os.Stderr, "Usage: late plugin install [--project] <source>")
 		return
 	}
@@ -235,7 +237,8 @@ func handlePluginInstall(pm *PluginManager, args []string) {
 }
 
 // parseProjectFlag checks if --project flag is present in args and returns
-// the flag state and remaining args (the source).
+// the flag state and remaining args (the source). Returns an empty rest
+// when args is empty (callers must handle the missing-argument case).
 func parseProjectFlag(args []string) (project bool, rest string) {
 	for i, a := range args {
 		if a == "--project" || a == "--local" {
@@ -252,20 +255,23 @@ func parseProjectFlag(args []string) (project bool, rest string) {
 			return true, ""
 		}
 	}
-	return false, args[0]
+	if len(args) > 0 {
+		return false, args[0]
+	}
+	return false, ""
 }
 
 // handlePluginRemove removes a plugin.
 func handlePluginRemove(pm *PluginManager, args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Error: missing plugin name")
-		fmt.Fprintln(os.Stderr, "Usage: late plugin remove [--project] <name>")
+	project, name := parseProjectFlag(args)
+	if project && !pm.HasProjectDir() {
+		fmt.Fprintln(os.Stderr, "Error: --project requires a .late/plugins/ directory in the current project")
+		fmt.Fprintln(os.Stderr, "Create it first: mkdir -p .late/plugins")
 		return
 	}
-
-	project, name := parseProjectFlag(args)
 	if name == "" {
 		fmt.Fprintln(os.Stderr, "Error: missing plugin name")
+		fmt.Fprintln(os.Stderr, "Usage: late plugin remove [--project] <name>")
 		return
 	}
 
@@ -302,6 +308,11 @@ func handlePluginRemove(pm *PluginManager, args []string) {
 // handlePluginLink creates a development symlink.
 func handlePluginLink(pm *PluginManager, args []string) {
 	project, path := parseProjectFlag(args)
+	if project && !pm.HasProjectDir() {
+		fmt.Fprintln(os.Stderr, "Error: --project requires a .late/plugins/ directory in the current project")
+		fmt.Fprintln(os.Stderr, "Create it first: mkdir -p .late/plugins")
+		return
+	}
 	if path == "" {
 		fmt.Fprintln(os.Stderr, "Error: missing path")
 		fmt.Fprintln(os.Stderr, "Usage: late plugin link [--project] <path>")

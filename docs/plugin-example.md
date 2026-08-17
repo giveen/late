@@ -26,7 +26,7 @@ late-codestyle/
 ├── hooks/
 │   ├── veto.sh          # onToolCall — mutate or block dangerous calls
 │   ├── welcome.sh       # onSessionStart
-│   └── log-result.sh    # onToolResult — observation only
+│   └── log-result.sh    # onToolResult — observation (may also mutate/veto)
 └── scripts/
     ├── lint.sh          # /lint handler
     ├── lint-server.sh   # MCP stdio server (mock for demo)
@@ -101,7 +101,9 @@ Notes on the choices below:
 - **Hooks**: each one demonstrates a different part of the hook
   contract (mutate/veto, sequential transform, lifecycle, observation).
 - **Tools**: declared inline so the model can call `lookup` directly,
-  no MCP sandbox needed. Names are namespaced to `late-codestyle:lookup`.
+  no MCP sandbox needed. Names are namespaced to
+  `late-codestyle__lookup` (sanitized — `:` is not accepted by
+  OpenAI-compatible endpoints).
 
 ---
 
@@ -126,7 +128,7 @@ scripts:
   `bash` tool with the project's formatter, but first describe the change
   to the user.
 - When the user asks "what flags does X have?" or requests a CLI lookup,
-  prefer the `late-codestyle:lookup` tool so the result lands as a real
+  prefer the `late-codestyle__lookup` tool so the result lands as a real
   tool call trace.
 - The plugin's `onToolCall` hook may redact or reject your proposed
   command — if a veto comes back as an error, surface it to the user
@@ -192,8 +194,9 @@ done
 ```
 
 The server is registered in the agent as the namespaced tool
-`late-codestyle:live-lint`. The MCP `env` field supports `${VAR}`
-expansion at launch time — wire secrets in via `env`, not args.
+`late-codestyle__live-lint` (sanitized; `:` becomes `_`). The MCP `env`
+field supports `${VAR}` expansion at launch time — wire secrets in via
+`env`, not args.
 
 ---
 
@@ -226,7 +229,9 @@ echo "- ${query}(1)     → man page (if installed)"
 
 The agent sees this as a normal tool. All the usual middleware
 applies — `onToolCall` can still veto it, `enabledTools` still gates
-it, and user confirmation still prompts the user.
+it, and user confirmation still prompts the user. The name is
+sanitized for OpenAI-compatible endpoints: `late-codestyle:lookup`
+becomes `late-codestyle__lookup` (only `[A-Za-z0-9_-]`, max 64 chars).
 
 ---
 
@@ -273,9 +278,9 @@ different part of it.
 
 | Hook            | Read from stdin                                       | Write to stdout                                          |
 | --------------- | ----------------------------------------------------- | -------------------------------------------------------- |
-| `onSessionStart` | empty JSON                                            | ignored (fire-and-forget)                                |
+| `onSessionStart` | empty JSON object `{}`                                 | ignored (fire-and-forget)                                |
 | `onToolCall`     | `{ "tool", "arguments", "timestamp" }`                | JSON → mutate `arguments` · literal `"blocked"` → veto the call · empty/non-JSON → pass-through |
-| `onToolResult`   | `{ "tool", "result" }`                                | ignored (observation only)                               |
+| `onToolResult`   | `{ "tool", "result" }`                                | JSON → replace the result the LLM sees · literal `"blocked"` → veto · empty/non-JSON → pass-through |
 | `onMessageSend`  | the current user message                              | replacement text (sequential)                             |
 
 ### `hooks/veto.sh` — `onToolCall` (mutate OR veto)
@@ -336,8 +341,10 @@ cat \
   | sed 's/^/[late-codestyle][result] /' >&2
 ```
 
-Observation only — `onToolResult` cannot mutate the result the agent
-sees; it is purely a logging/auditing hook.
+This hook logs to stderr, but `onToolResult` is **not** observation-only:
+hooks that print valid JSON to stdout replace the result the agent sees,
+and a literal `"blocked"` vetoes it. Keeping the script stderr-only is a
+choice, not a limitation.
 
 ---
 
@@ -393,7 +400,7 @@ A short rationale for the design choices that aren't obvious.
 | --------------------------------------- | -------------------------------------------------------------------- |
 | Two commands, two shapes                  | Demonstrates both wire-level dispatch modes.                          |
 | `onToolCall` **returns** JSON             | Demonstrates the gate-via-mutate contract — the most powerful hook.   |
-| `onToolResult` only writes to stderr      | Confirms there is no path back to the agent from this hook.           |
+| `onToolResult` only writes to stderr      | Demonstrates the observation use case; the hook can also mutate the result by printing JSON to stdout. |
 | `late.tools[*]` instead of MCP for `lookup` | Demonstrates the simpler "no-server" path inline tools support.       |
 | `themes` with both palette and glamour   | Shows the two parts of a plugin theme (semantic colors + style overrides). |
 | One global install, one `--project` install | Both scopes are first-class; pick whichever matches the rollout.    |

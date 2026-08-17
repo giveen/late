@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"late/internal/common"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -122,7 +123,8 @@ func TestHandleCommand_DuplicateLogsWarning(t *testing.T) {
 
 // TestGetInlineTools_AggregatesAcrossPlugins ensures that tools declared
 // independently by two plugins both appear in the result set, with names
-// namespaced to "<plugin>:<tool>" so identical bare names do not collide.
+// namespaced to "<plugin>__<tool>" (sanitized — no ':') so identical
+// bare names do not collide and OpenAI-compatible endpoints accept them.
 func TestGetInlineTools_AggregatesAcrossPlugins(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())
 
@@ -157,12 +159,79 @@ func TestGetInlineTools_AggregatesAcrossPlugins(t *testing.T) {
 	seen := map[string]bool{}
 	for _, t1 := range tools {
 		seen[t1.Name] = true
-		if !strings.Contains(t1.Name, ":") {
-			t.Fatalf("expected namespaced tool name, got %q", t1.Name)
+		if strings.Contains(t1.Name, ":") {
+			t.Fatalf("tool name %q contains ':', which OpenAI-compatible endpoints reject", t1.Name)
 		}
 	}
-	if !seen["alpha:summarize"] || !seen["beta:summarize"] {
-		t.Fatalf("expected alpha:summarize and beta:summarize, got %v", seen)
+	if !seen["alpha__summarize"] || !seen["beta__summarize"] {
+		t.Fatalf("expected alpha__summarize and beta__summarize, got %v", seen)
+	}
+}
+
+// TestGetInlineTools_SanitizesAndDeduplicates verifies the endpoint-safety
+// contract for inline tool names: invalid characters are replaced, names
+// are capped at common.MaxToolNameLen, and distinct plugin:tool combos
+// that sanitize to the same name get deterministic hash suffixes.
+func TestGetInlineTools_SanitizesAndDeduplicates(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	// "a-b" tool "c" and "a" tool "b-c" both sanitize to "a-b__c"
+	// without collision handling.
+	writeToolPlugin := func(dir, name, toolName string) {
+		mf := &LateManifest{
+			Tools: []LateToolManifest{
+				{Name: toolName, Description: "t",
+					Script: "scripts/t.sh", Parameters: jsonRaw(`{}`)},
+			},
+		}
+		p := writeTestPlugin(t, dir, name, mf)
+		p.Path = filepath.Join(dir, name)
+		writeExecutableShell(t, filepath.Join(p.Path, "scripts/t.sh"), `echo t`)
+		pm.Add(p)
+	}
+	writeToolPlugin(t.TempDir(), "a-b", "c")
+	writeToolPlugin(t.TempDir(), "a", "b-c")
+
+	tools := pm.GetInlineTools()
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	names := map[string]bool{}
+	for _, tl := range tools {
+		names[tl.Name] = true
+		if len(tl.Name) > common.MaxToolNameLen {
+			t.Fatalf("tool name %q exceeds %d chars", tl.Name, common.MaxToolNameLen)
+		}
+	}
+	if len(names) != 2 {
+		t.Fatalf("expected 2 unique tool names after dedup, got %v", names)
+	}
+	// The first occurrence keeps the plain name.
+	if !names["a-b__c"] {
+		t.Fatalf("expected first occurrence to keep name a-b__c, got %v", names)
+	}
+}
+
+// TestGetInlineTools_ScopedPluginNamesSanitized ensures npm-scoped plugin
+// names (@scope/name) produce endpoint-safe tool names.
+func TestGetInlineTools_ScopedPluginNamesSanitized(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	mf := &LateManifest{
+		Tools: []LateToolManifest{
+			{Name: "summarize", Description: "t",
+				Script: "scripts/t.sh", Parameters: jsonRaw(`{}`)},
+		},
+	}
+	p := writeTestPlugin(t, t.TempDir(), "@late/cool", mf)
+	writeExecutableShell(t, filepath.Join(p.Path, "scripts/t.sh"), `echo t`)
+	pm.Add(p)
+
+	tools := pm.GetInlineTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Name != "_late_cool__summarize" {
+		t.Fatalf("unexpected sanitized name %q, want %q", tools[0].Name, "_late_cool__summarize")
 	}
 }
 

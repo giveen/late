@@ -225,6 +225,12 @@ func (pm *PluginManager) RegisterPluginSkills(skillsDir string) error {
 		}
 	}
 
+	// The skills directory may not exist yet (e.g. the very first plugin
+	// install); create it so the symlinks below have a home.
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create skills directory: %w", err)
+	}
+
 	// Collect the set of valid skill symlink names to keep
 	keep := make(map[string]bool)
 
@@ -304,6 +310,13 @@ func (pm *PluginManager) RegisterPluginSkills(skillsDir string) error {
 				// Namespace skill symlinks to prevent collisions between plugins
 				namespacedName := p.Name + ":" + sk.Metadata.Name
 				linkName := filepath.Join(skillsDir, namespacedName)
+
+				// Scoped plugin names (e.g. "@scope/plugin:skill") produce
+				// nested link paths; create the parent directories first.
+				if err := os.MkdirAll(filepath.Dir(linkName), 0755); err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to create parent dir for plugin skill %s: %v\n", namespacedName, err)
+					continue
+				}
 				if _, err := os.Lstat(linkName); err == nil {
 					os.Remove(linkName)
 				}
@@ -317,25 +330,81 @@ func (pm *PluginManager) RegisterPluginSkills(skillsDir string) error {
 		}
 	}
 
-	// Clean up stale symlinks for removed or disabled plugins
-	entries, err := os.ReadDir(skillsDir)
-	if err == nil {
+	// Clean up stale symlinks for removed or disabled plugins. Only
+	// symlinks that Late itself created are ever removed — a symlink is
+	// considered plugin-owned when its target lives inside one of the
+	// plugin store directories. User-created symlinks pointing elsewhere
+	// (e.g. a personal "my-skill" link into ~/notes) are left untouched.
+	// The walk is recursive because scoped plugin names produce nested
+	// link paths under skillsDir (e.g. skillsDir/@scope/plugin:skill).
+	var prune func(dir string) error
+	prune = func(dir string) error {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
 		for _, entry := range entries {
+			fullPath := filepath.Join(dir, entry.Name())
 			if entry.IsDir() {
+				if err := prune(fullPath); err != nil {
+					return err
+				}
+				// Remove scoped-parent dirs (e.g. skillsDir/@scope) that the
+				// plugin system created and that are now empty. Empty
+				// @-prefixed dirs are Late's scoped-package convention; a
+				// user's non-empty dirs are never touched.
+				if strings.HasPrefix(entry.Name(), "@") {
+					if entries, rerr := os.ReadDir(fullPath); rerr == nil && len(entries) == 0 {
+						_ = os.Remove(fullPath)
+					}
+				}
 				continue
 			}
-			// Only remove symlinks (not regular skill dirs)
-			fullPath := filepath.Join(skillsDir, entry.Name())
 			info, err := os.Lstat(fullPath)
-			if err == nil && info.Mode()&os.ModeSymlink != 0 {
-				if !keep[entry.Name()] {
-					os.Remove(fullPath)
-				}
+			if err != nil || info.Mode()&os.ModeSymlink == 0 {
+				continue
+			}
+			rel, err := filepath.Rel(skillsDir, fullPath)
+			if err != nil {
+				continue
+			}
+			if keep[rel] {
+				continue
+			}
+			if pm.isPluginOwnedSymlink(fullPath) {
+				os.Remove(fullPath)
 			}
 		}
+		return nil
+	}
+	if err := prune(skillsDir); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to prune stale plugin skill symlinks: %v\n", err)
 	}
 
 	return nil
+}
+
+// isPluginOwnedSymlink reports whether the symlink at linkPath was created
+// by the plugin system: its target resolves inside one of the plugin store
+// directories (pluginsDir or projectDir). Dangling targets of removed
+// plugins still carry the store path prefix, so they are recognized too.
+func (pm *PluginManager) isPluginOwnedSymlink(linkPath string) bool {
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		return false
+	}
+	for _, base := range []string{pm.pluginsDir, pm.projectDir} {
+		if base == "" {
+			continue
+		}
+		if target == base || strings.HasPrefix(target, base+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildMCPConfigMap returns all enabled MCP server configurations

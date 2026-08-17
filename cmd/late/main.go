@@ -271,7 +271,16 @@ func main() {
 		}
 	}
 
+	// Snapshot the user-authored MCP config before plugin servers are merged
+	// into it, so the plugin watcher can recompute the desired server set
+	// (user config + current plugin servers) on every change.
+	baseMCPConfig := cloneMCPConfig(config)
+
 	// Plugin discovery and surface registration
+	var (
+		skillsDir  string
+		skillsErr  error
+	)
 	if pluginManager == nil {
 		pluginsDir, err := common.LatePluginsDir()
 		if err == nil {
@@ -282,43 +291,46 @@ func main() {
 			}
 			if err := pm.Discover(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to discover plugins: %v\n", err)
-			} else if pm.Count() > 0 {
-				fmt.Printf("Loading %d plugin(s)...\n", pm.Count())
+			} else {
+				// Keep the manager even with zero plugins so the watcher runs
+				// and picks up the first install without a restart.
 				pluginManager = pm
+				if pm.Count() > 0 {
+					fmt.Printf("Loading %d plugin(s)...\n", pm.Count())
 
-				// Register plugin skills into the skills directory
-				skillsDir, skillsErr := pathutil.LateSkillsDir()
-				if skillsErr == nil {
-					if err := pm.RegisterPluginSkills(skillsDir); err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to register plugin skills: %v\n", err)
+					// Register plugin skills into the skills directory
+					skillsDir, skillsErr = pathutil.LateSkillsDir()
+					if skillsErr == nil {
+						if err := pm.RegisterPluginSkills(skillsDir); err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: failed to register plugin skills: %v\n", err)
+						}
 					}
-				}
 
-				// Connect plugin MCP servers
-				pluginMCP := pm.BuildMCPConfigMap()
-				if len(pluginMCP) > 0 && config == nil {
-					config = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
-				}
-				if len(pluginMCP) > 0 && config != nil {
-					fmt.Println("Connecting to plugin MCP servers...")
-				for name, srv := range pluginMCP {
-					config.McpServers[name] = mcp.MCPServer{
-						Command:       srv.Command,
-						Args:          srv.Args,
-						Env:           srv.Env,
-						URL:           srv.URL,
-						TransportType: srv.TransportType,
-						Disabled:      srv.Disabled,
-						Dir:           srv.Dir,
+					// Connect plugin MCP servers
+					pluginMCP := pm.BuildMCPConfigMap()
+					if len(pluginMCP) > 0 && config == nil {
+						config = &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
+					}
+					if len(pluginMCP) > 0 && config != nil {
+						fmt.Println("Connecting to plugin MCP servers...")
+						for name, srv := range pluginMCP {
+							config.McpServers[name] = mcp.MCPServer{
+								Command:       srv.Command,
+								Args:          srv.Args,
+								Env:           srv.Env,
+								URL:           srv.URL,
+								TransportType: srv.TransportType,
+								Disabled:      srv.Disabled,
+								Dir:           srv.Dir,
+							}
+						}
+						// Servers already connected from the user config are
+						// skipped, so this only connects the plugin servers.
+						if err := mcpClient.ConnectFromConfig(context.Background(), config); err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: Failed to connect to plugin MCP servers: %v\n", err)
+						}
 					}
 				}
-					if err := mcpClient.ConnectFromConfig(context.Background(), config); err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: Failed to connect to plugin MCP servers: %v\n", err)
-					}
-				}
-			} else if pm.HasProjectDir() {
-				// No global plugins but we have project-local ones — still need the manager
-				pluginManager = pm
 			}
 		}
 	}
@@ -387,26 +399,21 @@ func main() {
 	executor.RegisterTools(sess.Registry, mainTools)
 
 	// Register MCP tools into the session registry.
-	// MCP tool names are now namespaced as "{server}:{tool}" (e.g. "graph-rag:list_files").
-	// For backwards compatibility with configs that disable tools by bare name
-	// (e.g. "list_files": false), we check the namespaced name first, then fall
-	// back to the bare name so existing configs keep working without modification.
+	// MCP tool names are now namespaced as "{server}__{tool}" (sanitized —
+	// e.g. "graph-rag__list_files"). For backwards compatibility with
+	// configs that disable tools by bare name (e.g. "list_files": false),
+	// we check the namespaced name first, then fall back to the bare name
+	// so existing configs keep working without modification.
+	//
+	// pluginToolNames records every plugin-provided tool registered here so
+	// the watcher can unregister the stale set on the next plugin change.
+	var pluginToolNames []string
 	for _, t := range mcpClient.GetTools() {
-		name := t.Name()
-		// Derive the bare name by stripping the server prefix.
-		bareName := name
-		if idx := strings.LastIndex(name, ":"); idx >= 0 {
-			bareName = name[idx+1:]
-		}
-		// Namespaced entry takes priority over bare-name entry.
-		if enabled, exists := enabledTools[name]; exists {
-			if !enabled {
-				continue
-			}
-		} else if enabled, exists := enabledTools[bareName]; exists && !enabled {
+		if !toolEnabled(enabledTools, t.Name()) {
 			continue
 		}
 		sess.Registry.Register(t)
+		pluginToolNames = append(pluginToolNames, t.Name())
 	}
 
 	// Register inline plugin tools (declared in the manifest's `late.tools`
@@ -416,16 +423,7 @@ func main() {
 	// uniformly for plugin-declared tools.
 	if pluginManager != nil {
 		for _, t := range pluginManager.GetInlineTools() {
-			// Apply enabledTools both by namespaced name and by bare name.
-			enabled := true
-			if v, ok := enabledTools[t.Name]; ok {
-				enabled = v
-			} else if idx := strings.LastIndex(t.Name, ":"); idx >= 0 {
-				if v, ok := enabledTools[t.Name[idx+1:]]; ok {
-					enabled = v
-				}
-			}
-			if !enabled {
+			if !toolEnabled(enabledTools, t.Name) {
 				continue
 			}
 			sess.Registry.Register(pluginInlineTool{
@@ -434,6 +432,7 @@ func main() {
 				parameters:  t.Parameters,
 				runner:      t.Runner,
 			})
+			pluginToolNames = append(pluginToolNames, t.Name)
 		}
 	}
 
@@ -497,15 +496,21 @@ func main() {
 		model.SubagentInfo = resolvedSubagentConfig.Model
 	}
 
-	// Register plugin slash commands + message hook + theme catalog + command
-	// handler into the TUI so plugin commands actually fire when the user
-	// presses Enter.
-	if pluginManager != nil && pluginManager.Count() > 0 {
-		model.SetPluginCommands(pluginManager.PluginCommands())
+	// Register plugin command handler + message hook into the TUI. These are
+	// wired even with zero plugins so a plugin installed while Late is
+	// running becomes fully functional (commands, message hooks) after the
+	// watcher fires — no restart needed.
+	if pluginManager != nil {
 		model.MessageHook = func(text string) string {
 			return pluginManager.HookedMessage(context.Background(), text)
 		}
 		model.CommandHandler = pluginManager.HandleCommand
+	}
+
+	// Register plugin slash commands + theme catalog so plugin commands fire
+	// when the user presses Enter.
+	if pluginManager != nil && pluginManager.Count() > 0 {
+		model.SetPluginCommands(pluginManager.PluginCommands())
 		model.SelectedTheme = themeID
 
 		// Map plugin.ThemeInfo to tui.ThemeEntry so the /themes picker and
@@ -543,7 +548,10 @@ func main() {
 
 	p := tea.NewProgram(model)
 
-	// Start plugin filesystem watcher (if plugin manager exists)
+	// Start plugin filesystem watcher. It runs even with zero plugins so
+	// the first install is picked up without a restart. On every change it
+	// fully re-registers the plugin surfaces: skills, MCP sessions, tools,
+	// commands, and themes — not just commands/themes.
 	if pluginManager != nil {
 		watcher := plugin.NewPollingWatcher(pluginManager)
 		// Also watch project-local dir if configured
@@ -552,7 +560,65 @@ func main() {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		// prevToolNames is owned exclusively by this goroutine (the TUI
+		// loop applies the unregister/register via the message below).
+		prevToolNames := append([]string(nil), pluginToolNames...)
 		go watcher.Start(ctx, func() {
+			// 1. Re-sync skill dirs (creates new ones, prunes stale ones
+			// for removed/disabled plugins). When Late started with zero
+			// plugins the skills dir was never resolved, so compute it lazily.
+			if skillsDir == "" {
+				if d, err := pathutil.LateSkillsDir(); err == nil {
+					skillsDir = d
+				}
+			}
+			if skillsDir != "" {
+				if err := pluginManager.RegisterPluginSkills(skillsDir); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to re-register plugin skills: %v\n", err)
+				}
+			}
+
+			// 2. Reconcile MCP sessions against the desired set: user config
+			// + current plugin servers. Removed or disabled plugins drop
+			// their servers (sessions closed); new ones connect.
+			desired := cloneMCPConfig(baseMCPConfig)
+			pluginMCP := pluginManager.BuildMCPConfigMap()
+			for name, srv := range pluginMCP {
+				desired.McpServers[name] = mcp.MCPServer{
+					Command:       srv.Command,
+					Args:          srv.Args,
+					Env:           srv.Env,
+					URL:           srv.URL,
+					TransportType: srv.TransportType,
+					Disabled:      srv.Disabled,
+					Dir:           srv.Dir,
+				}
+			}
+			if err := mcpClient.Reconcile(context.Background(), desired); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to reconcile plugin MCP servers: %v\n", err)
+			}
+
+			// 3. Collect the current plugin-provided tool set (MCP adapters
+			// + inline tools). The TUI loop applies the registry diff.
+			var added []common.Tool
+			for _, t := range mcpClient.GetTools() {
+				if toolEnabled(enabledTools, t.Name()) {
+					added = append(added, t)
+				}
+			}
+			for _, t := range pluginManager.GetInlineTools() {
+				if !toolEnabled(enabledTools, t.Name) {
+					continue
+				}
+				added = append(added, pluginInlineTool{
+					name:        t.Name,
+					description: t.Description,
+					parameters:  t.Parameters,
+					runner:      t.Runner,
+				})
+			}
+
+			// 4. Refresh commands and themes.
 			cmds := pluginManager.PluginCommands()
 			pluginThemes := pluginManager.AllThemes()
 			entries := make([]tui.ThemeEntry, len(pluginThemes))
@@ -565,7 +631,17 @@ func main() {
 					Palette:    info.Palette,
 				}
 			}
-			p.Send(tui.PluginChangeMsg{Commands: cmds, Themes: entries})
+
+			p.Send(tui.PluginChangeMsg{
+				Commands:     cmds,
+				Themes:       entries,
+				RemovedTools: prevToolNames,
+				AddedTools:   added,
+			})
+			prevToolNames = prevToolNames[:0]
+			for _, t := range added {
+				prevToolNames = append(prevToolNames, t.Name())
+			}
 		})
 	}
 
@@ -581,10 +657,17 @@ func main() {
 		}
 		rootAgent.SetContext(ctx)
 
-		// Set middlewares (e.g. TUI confirmation, plugin onToolCall hooks)
-		mws := []common.ToolMiddleware{tui.TUIConfirmMiddleware(p, sess.Registry)}
+		// Set middlewares. Middlewares are applied innermost-last, so the
+		// plugin onToolCall hooks run FIRST (outermost), then the TUI
+		// confirmation, then the onToolResult hooks. Confirmation must see
+		// the arguments AFTER plugins mutated them — otherwise a plugin
+		// could change the arguments after the user approved the call.
+		mws := []common.ToolMiddleware{}
 		if pluginManager != nil {
 			mws = append(mws, pluginManager.BuildHookMiddlewares()...)
+		}
+		mws = append(mws, tui.TUIConfirmMiddleware(p, sess.Registry))
+		if pluginManager != nil {
 			mws = append(mws, pluginManager.BuildToolResultMiddlewares()...)
 		}
 		rootAgent.SetMiddlewares(mws)
@@ -652,6 +735,33 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 	})
 	c.DiscoverBackend(ctx)
 	return c
+}
+
+// toolEnabled reports whether a namespaced tool name is enabled in the
+// enabledTools config: the namespaced name takes priority, then the bare
+// name (the part after the last "__" or ":" separator) so configs written
+// before namespacing keep working. Unknown tools default to enabled.
+func toolEnabled(enabledTools map[string]bool, name string) bool {
+	if v, ok := enabledTools[name]; ok {
+		return v
+	}
+	if v, ok := enabledTools[common.BareToolName(name)]; ok {
+		return v
+	}
+	return true
+}
+
+// cloneMCPConfig returns a shallow copy of an MCP config (the server map
+// is copied; server values are shared). A nil config becomes an empty one.
+func cloneMCPConfig(c *mcp.MCPConfig) *mcp.MCPConfig {
+	if c == nil {
+		return &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer)}
+	}
+	out := &mcp.MCPConfig{McpServers: make(map[string]mcp.MCPServer, len(c.McpServers))}
+	for k, v := range c.McpServers {
+		out.McpServers[k] = v
+	}
+	return out
 }
 
 // handleSessionCommand processes session subcommands

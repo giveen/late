@@ -409,17 +409,34 @@ func updateGit(pm *PluginManager, old *InstalledPlugin, source, targetDir string
 	if _, statErr := os.Stat(old.Path); statErr != nil {
 		return nil, fmt.Errorf("update: original plugin dir vanished mid-update: %w", statErr)
 	}
-	if err := os.RemoveAll(old.Path); err != nil {
-		return nil, fmt.Errorf("update: cannot remove old plugin dir: %w", err)
+
+	// Validate the freshly cloned replacement BEFORE touching the working
+	// copy: a broken update (bad clone, invalid manifest) must never
+	// destroy the working installation.
+	if _, err := LoadPlugin(tmp); err != nil {
+		return nil, fmt.Errorf("update: replacement clone at %s is not a valid plugin (%v); keeping the current install", tmp, err)
+	}
+
+	// Swap with rollback: move the working copy aside, move the clone into
+	// place, and restore the working copy if any step fails.
+	backup := tmp + ".backup"
+	if err := os.Rename(old.Path, backup); err != nil {
+		return nil, fmt.Errorf("update: cannot move old plugin dir aside: %w", err)
 	}
 	if err := os.Rename(tmp, old.Path); err != nil {
+		_ = os.Rename(backup, old.Path)
 		return nil, fmt.Errorf("update: cannot move new dir into place: %w", err)
 	}
 
 	loaded, err := LoadPlugin(old.Path)
 	if err != nil {
-		return nil, fmt.Errorf("update: cannot load refreshed plugin: %w", err)
+		// The replacement is broken in place — roll back to the working copy.
+		_ = os.RemoveAll(old.Path)
+		_ = os.Rename(backup, old.Path)
+		return nil, fmt.Errorf("update: replacement plugin is invalid after swap; rolled back: %w", err)
 	}
+	_ = os.RemoveAll(backup)
+
 	loaded.Source = old.Source
 	loaded.SourceType = old.SourceType
 	if !old.Enabled {
@@ -536,6 +553,20 @@ func RemovePlugin(pm *PluginManager, name string, projectLocal ...bool) (*Instal
 
 	if err := removeFromDir(destDir, name); err != nil {
 		return plugin, err
+	}
+
+	// Git-installed plugins live under a directory named after the
+	// repository, which may differ from the manifest name. Remove the
+	// plugin's actual on-disk location too so removal succeeds even when
+	// the two names differ (the name-based remove above is a no-op then).
+	if plugin.Path != "" {
+		if abs, err := filepath.Abs(plugin.Path); err == nil {
+			if rel, err := filepath.Rel(destDir, abs); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "..") {
+				if err := os.RemoveAll(abs); err != nil {
+					return plugin, fmt.Errorf("failed to remove plugin directory %s: %w", abs, err)
+				}
+			}
+		}
 	}
 
 	pm.Remove(name)

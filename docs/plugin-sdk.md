@@ -217,7 +217,7 @@ Hooks are scripts that run at specific lifecycle events. Each hook type accepts 
 | Hook | When it fires | Script receives |
 | --- | --- | --- |
 | `onToolCall` | Before a tool is executed | Tool name and arguments via stdin (JSON) |
-| `onSessionStart` | When a new session begins | Session metadata via stdin (JSON) |
+| `onSessionStart` | Once, when Late starts | An empty JSON object `{}` via stdin |
 | `onMessageSend` | When a user sends a message | The message content via stdin |
 
 ---
@@ -544,18 +544,20 @@ result on stdout.
 }
 ```
 
-The tool is registered under the namespaced name `<plugin>:<tool>` (e.g.
-`weather:summarize`). All the usual onToolCall / middleware pipeline rules
-apply, so plugin tools respect user confirmation, hook mutation, and
-enabledTools gating.
+The tool is registered under the namespaced name `<plugin>__<tool>`
+(e.g. `weather__summarize`) — sanitized to characters OpenAI-compatible
+endpoints accept (only `[A-Za-z0-9_-]`, capped at 64 chars; `:` and other
+characters become `_`, and rare collisions get a hash suffix). All the
+usual onToolCall / middleware pipeline rules apply, so plugin tools
+respect user confirmation, hook mutation, and enabledTools gating.
 
 ### `late.hooks` — lifecycle hooks
 
 | Hook            | Trigger                                                       | Input (stdin)                                          |
 | --------------- | ------------------------------------------------------------- | ------------------------------------------------------ |
-| `onSessionStart` | Once, when Late starts.                                      | empty                                                   |
+| `onSessionStart` | Once, when Late starts.                                      | an empty JSON object `{}`                                |
 | `onToolCall`     | Before every tool runs. May mutate or veto (return `"blocked"`). | `{ "tool": "...", "arguments": {...}, "timestamp": "..." }` |
-| `onToolResult`   | After every tool runs. Observation only by default; can **mutate** the result before the LLM sees it (see [Tool-result mutation](#tool-result-mutation) below). | `{ "tool": "...", "result": "..." }`                    |
+| `onToolResult`   | After every tool runs. JSON stdout **mutates** the result the LLM sees; `"blocked"` vetoes it (see [Tool-result mutation](#tool-result-mutation) below). | `{ "tool": "...", "result": "..." }`                    |
 | `onMessageSend`  | Sequential transform of outgoing user messages.              | the current message text                                 |
 
 Hooks are run inside the plugin's directory, so relative paths in the
@@ -628,10 +630,11 @@ interpreted like this:
 | literal `blocked`       | Vetoes the result; the calling tool returns an error.            |
 | stderr / nonzero exit   | Logged, the rest of the chain continues with the prior result.   |
 
-The public entry point is `(*PluginManager).CallOnToolResultHooks(ctx, tool, result) ([]byte, error)`.
-The orchestrator's tool-execution pipeline does not call it yet —
-plugin authors can invoke it from a custom tool shim or an add-on
-process while the agent-side integration is being finalized.
+The pipeline is wired up automatically: after every tool execution,
+`BuildToolResultMiddlewares` calls `CallOnToolResultHooks(ctx, tool,
+result)` and feeds the (possibly rewritten) bytes back to the LLM as the
+tool result. The public entry point is also available directly:
+`(*PluginManager).CallOnToolResultHooks(ctx, tool, result) ([]byte, error)`.
 
 ---
 

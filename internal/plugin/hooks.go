@@ -69,11 +69,11 @@ func runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []b
 	execCtx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
 
-	// exec.CommandContext's first arg is the lookup name; the second arg
-	// is argv[0]. Passing the resolved absolute path twice gives a stable,
-	// matches-lookup binary and avoids any three-index slicing (which is
-	// invalid for Go strings).
-	cmd := exec.CommandContext(execCtx, resolved, resolved)
+	// exec.CommandContext's first arg is the binary path. Passing it only
+	// once gives argv = [resolved] ($0 = the script path) with no stray
+	// positional arguments — passing it twice used to leak the path into
+	// $1, which scripts reading positional args did not expect.
+	cmd := exec.CommandContext(execCtx, resolved)
 	setCmdSysProcAttr(cmd)
 	cmd.Dir = pluginDir
 
@@ -251,9 +251,12 @@ func (pm *PluginManager) BuildHookMiddlewares() []common.ToolMiddleware {
 }
 
 // CallOnSessionStartHooks fires OnSessionStart hooks for all enabled plugins
-// in parallel. Errors are logged; this never returns a fatal error.
+// in parallel. Each hook receives an empty JSON object on stdin (the
+// documented contract); errors are logged but never fatal.
 func (pm *PluginManager) CallOnSessionStartHooks() {
-	pm.fanout(context.Background(), "session-start", nil)
+	pm.fanout(context.Background(), "session-start", func(pluginDir, script, pluginName string) []byte {
+		return []byte("{}")
+	})
 }
 
 // BuildToolResultMiddlewares returns post-execution ToolMiddlewares that

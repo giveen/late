@@ -162,8 +162,10 @@ type MCPServerConfig struct {
 //        result to the agent.
 //     3. Return empty / non-JSON to pass through unchanged.
 //   - onToolResult receives {"tool": "...", "result": "..."} via stdin.
-//     Read-only observation hook; the return value is currently logged
-//     but not used to mutate anything.
+//     Non-empty JSON stdout replaces the result the LLM sees; "blocked"
+//     vetoes it; empty/non-JSON passes through. Runs after every tool
+//     execution via BuildToolResultMiddlewares, so it IS integrated (not
+//     observation-only).
 //   - onSessionStart fires once when Late starts. It receives an empty
 //     JSON object on stdin. Errors and stderr are forwarded to the user's
 //     TUI.
@@ -400,9 +402,12 @@ func translateOmpToLate(omp *OmpManifest) *LateManifest {
 // tryLoadClaudeCode loads a plugin in Claude Code format:
 //   - .claude-plugin/plugin.json for metadata
 //   - skills/ directory for skills
-//   - commands/ directory (legacy) for commands
 //   - .mcp.json at root for MCP servers
-//   - hooks/hooks.json at root for hooks
+//
+// Claude Code's `commands/*.md` and `hooks/hooks.json` surfaces are NOT
+// translated (see the NOTE in the loader body) — both were parsed without
+// ever being wired up, so they were removed until they can be implemented
+// cleanly on top of Late's own manifest.
 func tryLoadClaudeCode(dir string) (*InstalledPlugin, error) {
 	claudeDir := filepath.Join(dir, ".claude-plugin")
 	manifestPath := filepath.Join(claudeDir, "plugin.json")
@@ -431,17 +436,11 @@ func tryLoadClaudeCode(dir string) (*InstalledPlugin, error) {
 		late.Skills = append(late.Skills, "skills/")
 	}
 
-	// Auto-detect commands/ directory (Claude Code legacy)
-	if info, err := os.Stat(filepath.Join(dir, "commands")); err == nil && info.IsDir() {
-		entries, _ := os.ReadDir(filepath.Join(dir, "commands"))
-		for _, e := range entries {
-			name := e.Name()
-			if strings.HasSuffix(name, ".md") {
-				cmdName := "/" + strings.TrimSuffix(name, ".md")
-				late.Commands = append(late.Commands, LateCommandManifest{Name: cmdName})
-			}
-		}
-	}
+	// NOTE: Claude Code `commands/*.md` and `hooks/hooks.json` surfaces are
+	// intentionally NOT auto-detected. The Markdown command files only
+	// contributed names with no usable content, and hooks.json was parsed
+	// then discarded — both integrations were removed so they can later be
+	// implemented cleanly on top of Late's own manifest format.
 
 	// Auto-detect .mcp.json at root (Claude Code style).
 	// Two formats exist in the wild:
@@ -470,18 +469,6 @@ func tryLoadClaudeCode(dir string) (*InstalledPlugin, error) {
 					late.MCP = &LateMCPManifest{Servers: servers}
 				}
 			}
-		}
-	}
-
-	// Auto-detect hooks/hooks.json at root
-	hooksPath := filepath.Join(dir, "hooks", "hooks.json")
-	if hooksData, err := os.ReadFile(hooksPath); err == nil {
-		var hooksCfg struct {
-			Hooks json.RawMessage `json:"hooks"`
-		}
-		if err := json.Unmarshal(hooksData, &hooksCfg); err == nil && hooksCfg.Hooks != nil {
-			// Store raw hooks JSON — the hook system handles Claude Code
-			// hook format via its own adapter.
 		}
 	}
 
@@ -528,7 +515,15 @@ func isSymlink(path string) bool {
 // SavePluginMeta persists a minimal metadata file for the plugin. After
 // writing, force the file's mtime to "now" so the PollingWatcher's snapshot
 // always detects the change even on filesystems that coalesce rapid writes.
+//
+// Local dev-symlink plugins are skipped: the plugin directory is a symlink
+// into the developer's source tree, and writing through it would pollute
+// the source with Late's cached metadata (which then overrides later
+// manifest edits). Their install provenance is re-derived on every load.
 func SavePluginMeta(plugin *InstalledPlugin) error {
+	if plugin.SourceType == "local" {
+		return nil
+	}
 	metaPath := filepath.Join(plugin.Path, ".late-plugin.json")
 	data, err := json.MarshalIndent(plugin, "", "  ")
 	if err != nil {
@@ -543,6 +538,14 @@ func SavePluginMeta(plugin *InstalledPlugin) error {
 }
 
 // LoadPluginMeta loads the metadata from a plugin directory.
+//
+// Manifest-derived fields (name, version, description, surfaces) always
+// come from the live package.json — the cached metadata file is a snapshot
+// that must not override later manifest changes (this mattered for local
+// devlinks, whose source dirs could previously accumulate a stale meta
+// file through the symlink). The meta file only supplies what package.json
+// cannot carry: install provenance (Source/SourceType) and the user's
+// Enabled preference.
 func LoadPluginMeta(dir string) (*InstalledPlugin, error) {
 	metaPath := filepath.Join(dir, ".late-plugin.json")
 	data, err := os.ReadFile(metaPath)
@@ -553,19 +556,29 @@ func LoadPluginMeta(dir string) (*InstalledPlugin, error) {
 		return nil, fmt.Errorf("failed to read %s: %w", metaPath, err)
 	}
 
-	var plugin InstalledPlugin
-	if err := json.Unmarshal(data, &plugin); err != nil {
+	var meta InstalledPlugin
+	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", metaPath, err)
 	}
 
-	// Ensure the Path field is up to date
-	plugin.Path = dir
-
 	// The meta file is user-editable; re-validate the name so a planted
 	// traversal name can't reach remove/update path joins via the registry.
-	if err := validatePluginName(plugin.Name); err != nil {
+	if err := validatePluginName(meta.Name); err != nil {
 		return nil, fmt.Errorf("plugin metadata at %s has invalid name: %w", metaPath, err)
 	}
 
-	return &plugin, nil
+	// Fresh manifest wins for manifest-derived fields.
+	fresh, err := LoadPlugin(dir)
+	if err != nil {
+		// package.json is unreadable but the meta snapshot exists — fall
+		// back to the snapshot rather than dropping the plugin entirely.
+		fresh = &meta
+	} else {
+		fresh.SourceType = meta.SourceType
+		fresh.Source = meta.Source
+		fresh.Enabled = meta.Enabled
+		fresh.Path = dir
+	}
+
+	return fresh, nil
 }

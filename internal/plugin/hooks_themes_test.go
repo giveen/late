@@ -343,6 +343,47 @@ func TestCallOnSessionStartHooks_NoPanicOnEmpty(t *testing.T) {
 	pm.CallOnSessionStartHooks()
 }
 
+// 9b. onSessionStart hooks receive an empty JSON object on stdin, matching
+// the documented contract (previously they got nil stdin, which made
+// scripts that `cat | jq .` hang).
+func TestCallOnSessionStartHooks_EmptyJSONStdin(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	pluginDir := t.TempDir()
+	capture := filepath.Join(pluginDir, "stdin.txt")
+	writeExecutableShell(t, filepath.Join(pluginDir, "start.sh"), "cat > "+capture)
+
+	mf := &LateManifest{Hooks: &LateHooksManifest{OnSessionStart: []string{"start.sh"}}}
+	p := writeTestPlugin(t, pluginDir, "start-plugin", mf)
+	p.Path = pluginDir
+	pm.Add(p)
+
+	pm.CallOnSessionStartHooks()
+
+	got, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	if string(got) != "{}" {
+		t.Fatalf("expected empty JSON object on stdin, got %q", got)
+	}
+}
+
+// 9c. runHook must not pass the script path as a positional argument:
+// scripts reading $1 should see nothing (the old double-path argv leaked
+// the script path into $1).
+func TestRunHook_NoStrayPositionalArg(t *testing.T) {
+	pluginDir := t.TempDir()
+	script := filepath.Join(pluginDir, "arg.sh")
+	writeExecutableShell(t, script, `echo "[$1]"`)
+	out, err := runHook(context.Background(), pluginDir, "arg.sh", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "[]" {
+		t.Fatalf("expected empty $1, got %q", out)
+	}
+}
+
 // NOTE: Tests for ResolveRenderTheme and LateTheme live in
 // internal/tui/theme_test.go since the helper lives in the tui
 // package. Putting them here would create a circular import.

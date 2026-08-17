@@ -220,6 +220,54 @@ func TestUpdateUnknownName(t *testing.T) {
 	}
 }
 
+// TestUpdateGit_BrokenReplacementKeepsWorkingInstall: when the freshly
+// cloned replacement cannot be loaded as a plugin, Update must error out
+// BEFORE touching the working installation — a broken update must never
+// destroy the working copy.
+func TestUpdateGit_BrokenReplacementKeepsWorkingInstall(t *testing.T) {
+	root := t.TempDir()
+	pluginsDir := filepath.Join(root, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// The exec seam stubs git clone as a no-op success, so the temp clone
+	// dir stays empty — LoadPlugin on it fails (no manifest), which is
+	// exactly the broken-replacement case.
+	rec, cleanup := withExecSeams(t)
+	defer cleanup()
+
+	workDir := filepath.Join(pluginsDir, "gitsrc")
+	writeMinimalPluginManifest(t, workDir, "gitsrc", "1.0.0", "https://example.com/gitsrc.git", "git")
+	if _, err := os.Stat(filepath.Join(workDir, "package.json")); err != nil {
+		t.Fatalf("working install missing manifest: %v", err)
+	}
+
+	pm := NewPluginManager(pluginsDir)
+	if err := pm.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	_, err := Update(pm, "gitsrc", nil)
+	if err == nil {
+		t.Fatal("expected Update to fail on a broken replacement clone")
+	}
+	if !strings.Contains(err.Error(), "not a valid plugin") {
+		t.Fatalf("expected error to mention invalid replacement, got: %v", err)
+	}
+
+	// The working installation must be untouched.
+	if _, err := os.Stat(filepath.Join(workDir, "package.json")); err != nil {
+		t.Errorf("working install was destroyed by the failed update: %v", err)
+	}
+	if pm.Plugin("gitsrc") == nil {
+		t.Error("plugin should still be registered after a failed update")
+	}
+	if len(rec()) != 1 {
+		t.Fatalf("expected exactly 1 exec (git clone), got %d", len(rec()))
+	}
+}
+
 // TestUpdatePropagatesExecError: if the underlying npm install exits
 // non-zero, Update surfaces that error wrapped and does NOT silently claim
 // success.

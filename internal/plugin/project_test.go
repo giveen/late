@@ -384,6 +384,47 @@ func TestRemovePlugin_NotFound(t *testing.T) {
 	}
 }
 
+// TestRemovePlugin_DirNameDiffersFromManifestName simulates a git-installed
+// plugin whose on-disk directory is named after the repository while the
+// manifest (and therefore the registry key) uses a different name. Removal
+// must succeed and delete the actual directory.
+func TestRemovePlugin_DirNameDiffersFromManifestName(t *testing.T) {
+	globalDir := t.TempDir()
+
+	// Repo name: "my-repo"; manifest name: "my_plugin".
+	repoDir := filepath.Join(globalDir, "my-repo")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	pkg := `{"name": "my_plugin", "version": "1.0.0", "late": {}}`
+	if err := os.WriteFile(filepath.Join(repoDir, "package.json"), []byte(pkg), 0644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	pm := NewPluginManager(globalDir)
+	// Register exactly like InstallFromGit does: keyed by manifest name,
+	// path pointing at the repo-named directory.
+	plugin, err := LoadPlugin(repoDir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	plugin.Path = repoDir
+	plugin.SourceType = "git"
+	plugin.Source = "https://example.com/my-repo.git"
+	pm.Add(plugin)
+
+	if _, err := RemovePlugin(pm, "my_plugin"); err != nil {
+		t.Fatalf("RemovePlugin by manifest name failed: %v", err)
+	}
+
+	if _, err := os.Stat(repoDir); !os.IsNotExist(err) {
+		t.Errorf("expected repo-named dir %s to be removed, still exists (err=%v)", repoDir, err)
+	}
+	if pm.Plugin("my_plugin") != nil {
+		t.Error("expected plugin to be removed from the manager")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // HasProjectDir / TargetDir integration
 // ---------------------------------------------------------------------------
@@ -459,6 +500,18 @@ func TestParseProjectFlag(t *testing.T) {
 		{
 			name:     "only --project, no source",
 			args:     []string{"--project"},
+			wantProj: true,
+			wantRest: "",
+		},
+		{
+			name:     "no args at all",
+			args:     []string{},
+			wantProj: false,
+			wantRest: "",
+		},
+		{
+			name:     "only --local, no source",
+			args:     []string{"--local"},
 			wantProj: true,
 			wantRest: "",
 		},

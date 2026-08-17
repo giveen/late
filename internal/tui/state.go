@@ -348,9 +348,17 @@ func (m *Model) FindThemeByIndex(i int) *ThemeEntry {
 // Commands carries the updated list of plugin-provided slash commands.
 // Themes carries the updated list of plugin-provided themes for the /themes
 // picker so the TUI can refresh without restarting Late.
+//
+// RemovedTools lists every tool name the previous refresh registered
+// (MCP adapters + inline plugin tools); AddedTools is the current set.
+// The TUI update loop unregisters the former and registers the latter so
+// a removed or disabled plugin stops advertising its tools immediately,
+// and a newly installed plugin's tools become callable.
 type PluginChangeMsg struct {
-	Commands []string
-	Themes   []ThemeEntry
+	Commands     []string
+	Themes       []ThemeEntry
+	RemovedTools []string
+	AddedTools   []common.Tool
 }
 
 // OrchestratorEventMsg is the bridge between Orchestrator goroutines and the TUI loop.

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"late/internal/client"
+	"late/internal/common"
 )
 
 // InlineTool describes a plugin-declared tool that runs as a local
@@ -16,19 +17,27 @@ import (
 // The Runner signature mirrors common.ToolRunner so the tool can be
 // chained into the same ToolMiddleware pipeline that MCP-backed tools
 // use.
+//
+// Name is sanitized for OpenAI-compatible endpoints (which reject ':'
+// and names over common.MaxToolNameLen): the parts are joined as
+// "<plugin>__<tool>" with every character outside [A-Za-z0-9_-]
+// replaced by '_', then capped at 64 chars. Rare collisions between
+// distinct combos that sanitize identically are resolved with a
+// deterministic hash suffix.
 type InlineTool struct {
-	Name        string          // "<plugin>:<tool>" — namespaced to avoid collisions
+	Name        string          // namespaced, endpoint-safe tool name
 	Description string          // shown in the model's tool definitions
 	Parameters  json.RawMessage // raw JSON Schema fragment
 	Runner      func(ctx context.Context, call client.ToolCall) (string, error)
 }
 
-// GetInlineTools aggregates every inline tool declared across all
-// enabled plugins. Names are always namespaced as "<plugin>:<tool>"
-// to prevent collisions when two plugins declare a tool with the
-// same short name. Disabled and nil-manifest plugins are skipped; a
-// plugin whose script path fails containment is silently skipped with
-// a stderr warning rather than crashing discovery.
+// GetInlineTools returns every inline tool declared across all enabled
+// plugins. Names are namespaced as "<plugin>__<tool>" (sanitized — see
+// InlineTool) so two plugins declaring the same short tool name cannot
+// collide, and so the names are accepted by OpenAI-compatible
+// endpoints. Disabled and nil-manifest plugins are skipped; a plugin
+// whose script path fails the containment check is silently skipped
+// with a stderr warning rather than crashing discovery.
 func (pm *PluginManager) GetInlineTools() []InlineTool {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -53,7 +62,7 @@ func (pm *PluginManager) GetInlineTools() []InlineTool {
 			pluginDir := p.Path
 			scriptPath := t.Script
 			tools = append(tools, InlineTool{
-				Name:        p.Name + ":" + t.Name,
+				Name:        common.NamespaceToolName(p.Name, t.Name),
 				Description: t.Description,
 				Parameters:  t.Parameters,
 				Runner: func(ctx context.Context, call client.ToolCall) (string, error) {
@@ -69,6 +78,19 @@ func (pm *PluginManager) GetInlineTools() []InlineTool {
 				},
 			})
 		}
+	}
+
+	// Resolve collisions between (rare) pairs of distinct plugin:tool
+	// combos that sanitize to the same name, e.g. "a-b:c" vs "a:b-c" —
+	// both become "a-b__c". The first occurrence keeps the name; later
+	// duplicates get a deterministic hash suffix.
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	uniq := common.DeduplicateToolNames(names, nil)
+	for i := range tools {
+		tools[i].Name = uniq[i]
 	}
 	return tools
 }
