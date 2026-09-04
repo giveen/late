@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"sort"
 )
 
 var LateTheme = []byte(`
@@ -132,12 +131,8 @@ var LateTheme = []byte(`
 // ResolveRenderTheme merges plugin-provided glamour modifications on top of
 // the bundled base theme. The merge is a recursive top-level merge: keys in
 // `mod` win, but unmodified keys retain their base values.
-//
-// `palette` (if non-empty) is surfaced separately so the TUI can apply
-// semantic overrides via lipgloss without rebuilding the glamour config.
-// This keeps palettes orthogonal to markdown rendering.
-func ResolveRenderTheme(name string, mod map[string]any, palette map[string]string) ([]byte, error) {
-	if len(mod) == 0 && len(palette) == 0 {
+func ResolveRenderTheme(name string, mod map[string]any) ([]byte, error) {
+	if len(mod) == 0 {
 		return LateTheme, nil
 	}
 
@@ -148,21 +143,6 @@ func ResolveRenderTheme(name string, mod map[string]any, palette map[string]stri
 
 	for k, v := range mod {
 		base[k] = mergeAny(base[k], v)
-	}
-
-	// Optional palette overlay is exposed under a special key so consumers can
-	// introspect it if they want, but doesn't break glamour's strict schema.
-	if len(palette) > 0 {
-		keys := make([]string, 0, len(palette))
-		for k := range palette {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		p := make(map[string]any, len(palette))
-		for _, k := range keys {
-			p[k] = palette[k]
-		}
-		base["_late_palette"] = p
 	}
 
 	// Theme name is read by humans debugging glamour; harmless otherwise.

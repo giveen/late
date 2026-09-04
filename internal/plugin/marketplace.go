@@ -12,14 +12,15 @@ import (
 	"time"
 )
 
-// DefaultRegistryBaseURL is the canonical marketplace endpoint. It can
-// be overridden by LATE_PLUGIN_REGISTRY (no trailing slash expected —
+// DefaultRegistryBaseURL is the canonical marketplace endpoint. It can be
+// overridden by LATE_PLUGIN_REGISTRY (no trailing slash expected —
 // "/plugins/<name>.json" is appended dynamically).
 //
-// The literal string is intentionally a placeholder so that, until a real
-// registry is published, `Install` falls through to npm interpretation for
-// any unresolved bare name (see Resolve fallback policy).
-const DefaultRegistryBaseURL = "https://registry.late.dev/v1"
+// Deliberately empty for now — no registry is published yet. With no
+// BaseURL configured, Resolve() returns an error and Install falls
+// through to npm interpretation for any unresolved bare name (see the
+// fallback policy in Install). Revisit once a real registry exists.
+const DefaultRegistryBaseURL = ""
 
 // ErrMarketplaceMiss indicates the registry returned 404 for the
 // requested plugin name. Callers should fall back to plain npm

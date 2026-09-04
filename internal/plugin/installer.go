@@ -577,6 +577,16 @@ func RemovePlugin(pm *PluginManager, name string, projectLocal ...bool) (*Instal
 	}
 
 	pm.Remove(name)
+
+	// Drop any stale disabled-state override so a future `late plugin
+	// link` reinstalling the same name doesn't inherit a removed plugin's
+	// disabled state (see SavePluginMeta / applyLocalDisabledOverride).
+	if plugin.SourceType == "local" {
+		if err := setDisabledOverride(name, false); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to clear plugin state override for %s: %v\n", name, err)
+		}
+	}
+
 	return plugin, nil
 }
 

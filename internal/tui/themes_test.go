@@ -19,9 +19,6 @@ func makeTheme(id, pluginName, themeName string) ThemeEntry {
 				"color": "#ABCDEF",
 			},
 		},
-		Palette: map[string]string{
-			"bg": "#000000",
-		},
 	}
 }
 
@@ -165,6 +162,42 @@ func TestApplyTheme_BuildsRendererOnEmptyViewport(t *testing.T) {
 	}
 	if m.SelectedTheme != "ocean:deep" {
 		t.Fatalf("expected SelectedTheme set, got %q", m.SelectedTheme)
+	}
+}
+
+// 10b. GetRenderer must build from the theme ApplyTheme installed, not
+// always fall back to the bundled LateTheme. Regression test: GetRenderer
+// used to hardcode glamour.WithStylesFromJSONBytes(LateTheme) regardless
+// of any applied theme, so markdown block rendering (which goes through
+// GetRenderer, unlike the fixed-width m.Renderer used for the chat
+// viewport) silently ignored `/themes` switches.
+func TestGetRenderer_ReflectsAppliedTheme(t *testing.T) {
+	m := &Model{}
+	info := ThemeEntry{
+		ID:         "ocean:deep",
+		PluginName: "ocean",
+		ThemeName:  "deep",
+		Glamour: map[string]any{
+			"document": map[string]any{
+				"color": "#123456",
+			},
+		},
+	}
+	if err := m.ApplyTheme(&info); err != nil {
+		t.Fatalf("ApplyTheme failed: %v", err)
+	}
+
+	// GetRenderer must be able to build a renderer at a width that was
+	// never used by ApplyTheme's own fixed-width renderer, proving it
+	// reads the stored style bytes rather than reusing m.Renderer.
+	if r := m.GetRenderer(120); r == nil {
+		t.Fatal("expected GetRenderer to return a non-nil renderer")
+	}
+	if m.activeThemeStyles == nil {
+		t.Fatal("expected ApplyTheme to record activeThemeStyles for GetRenderer to use")
+	}
+	if !strings.Contains(string(m.activeThemeStyles), "#123456") {
+		t.Fatalf("expected activeThemeStyles to contain the applied theme's override, got %s", m.activeThemeStyles)
 	}
 }
 

@@ -399,7 +399,11 @@ func (pm *PluginManager) HookedMessage(ctx context.Context, text string) string 
 				continue
 			}
 			if out != "" {
-				fmt.Fprintf(os.Stderr, "[%s/onMessageSend/%s] transformed message\n", h.pluginName, script)
+				// Deliberately not logged: every successful onMessageSend
+				// transform would otherwise print a line to the terminal
+				// for every message the user sends, leaking into the TUI's
+				// stderr. Re-add this once there's a proper logger that
+				// isn't just os.Stderr.
 				current = out
 			}
 		}

@@ -451,7 +451,7 @@ func main() {
 	themeBytes := tui.LateTheme
 	if themeID != "" && pluginManager != nil {
 		if info, err := pluginManager.GetTheme(themeID); err == nil && info != nil {
-			if merged, mErr := tui.ResolveRenderTheme(info.ID, info.Glamour, info.Palette); mErr == nil {
+			if merged, mErr := tui.ResolveRenderTheme(info.ID, info.Glamour); mErr == nil {
 				themeBytes = merged
 				fmt.Fprintf(os.Stderr, "Applied plugin theme: %s\n", info.ID)
 			}
@@ -531,7 +531,6 @@ func main() {
 					PluginName: info.PluginName,
 					ThemeName:  info.ThemeName,
 					Glamour:    info.Glamour,
-					Palette:    info.Palette,
 				}
 			}
 			model.SetThemes(entries)
@@ -787,7 +786,6 @@ func (s *pluginToolSync) refresh(p *tea.Program, mcpClient *mcp.Client, pluginMa
 				PluginName: info.PluginName,
 				ThemeName:  info.ThemeName,
 				Glamour:    info.Glamour,
-				Palette:    info.Palette,
 			}
 		}
 	}

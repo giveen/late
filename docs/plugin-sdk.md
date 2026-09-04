@@ -587,11 +587,11 @@ late plugin install git-helper
 late plugin install github:my-org/git-helper
 ```
 
-Bare names hit the marketplace first (`LATE_PLUGIN_REGISTRY` overrides
-`https://registry.late.dev/v1`). The registry returns either an npm target
-or a git URL. If the registry is unreachable or returns 404, install
-falls back to trying the bare name as an npm package. Override the
-registry from the environment when self-hosting:
+Bare names hit the marketplace first, if `LATE_PLUGIN_REGISTRY` is set — no
+default registry is published yet, so without it the marketplace step is
+skipped. The registry returns either an npm target or a git URL. If the
+registry is unreachable or returns 404, install falls back to trying the
+bare name as an npm package. Point at a registry from the environment:
 
 ```bash
 export LATE_PLUGIN_REGISTRY="https://registry.example.com/v1"

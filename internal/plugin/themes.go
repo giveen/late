@@ -12,21 +12,19 @@ import (
 // Each theme is identified by a namespaced ID of the form
 // "<plugin-name>:<theme-name>".
 type ThemeInfo struct {
-	ID         string            // "<pluginname>:<themename>"
-	PluginName string            // owning plugin name
-	ThemeName  string            // bare theme name (as declared in the JSON's "name" field)
-	Palette    map[string]string // semantic palette: bg/fg/accent/etc.
-	Glamour    map[string]any    // glamour-style JSON overrides (merged into base theme)
-	SourcePath string            // absolute path to the loaded JSON file
+	ID         string         // "<pluginname>:<themename>"
+	PluginName string         // owning plugin name
+	ThemeName  string         // bare theme name (as declared in the JSON's "name" field)
+	Glamour    map[string]any // glamour-style JSON overrides (merged into base theme)
+	SourcePath string         // absolute path to the loaded JSON file
 }
 
 // ThemeFile is the on-disk schema for a plugin theme file. Only `name` is
-// required; `palette` and `glamour` are optional overrides. Unknown fields
-// are tolerated for forward compatibility.
+// required; `glamour` is an optional set of overrides. Unknown fields are
+// tolerated for forward compatibility.
 type ThemeFile struct {
-	Name    string            `json:"name"`
-	Palette map[string]string `json:"palette,omitempty"`
-	Glamour map[string]any    `json:"glamour,omitempty"`
+	Name    string         `json:"name"`
+	Glamour map[string]any `json:"glamour,omitempty"`
 }
 
 // resolveThemePath performs the same kind of containment check we use for
@@ -105,7 +103,6 @@ func (pm *PluginManager) AllThemes() []ThemeInfo {
 				ID:         p.Name + ":" + f.Name,
 				PluginName: p.Name,
 				ThemeName:  f.Name,
-				Palette:    f.Palette,
 				Glamour:    f.Glamour,
 				SourcePath: tp,
 			})
@@ -176,7 +173,6 @@ func (pm *PluginManager) findTheme(pluginName, themeName string) (*ThemeInfo, er
 				ID:         p.Name + ":" + f.Name,
 				PluginName: p.Name,
 				ThemeName:  f.Name,
-				Palette:    f.Palette,
 				Glamour:    f.Glamour,
 				SourcePath: tp,
 			}, nil

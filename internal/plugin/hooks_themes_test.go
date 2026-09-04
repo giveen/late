@@ -438,7 +438,7 @@ func TestResolveThemePath_RejectsTraversal(t *testing.T) {
 func TestLoadThemeFile_RequiresName(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "bad.json")
-	if err := os.WriteFile(p, []byte(`{"palette": {}}`), 0644); err != nil {
+	if err := os.WriteFile(p, []byte(`{}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadThemeFile(p); err == nil {
@@ -452,7 +452,7 @@ func TestGetTheme_BareNameLookup(t *testing.T) {
 	dir := t.TempDir()
 	mf := &LateManifest{Themes: []string{"ocean.json"}}
 	p := writeTestPlugin(t, dir, "theme-plugin", mf)
-	writeJSON(t, p.Path, "ocean.json", `{"name":"ocean","palette":{"bg":"#000"}}`)
+	writeJSON(t, p.Path, "ocean.json", `{"name":"ocean"}`)
 	pm.Add(p)
 
 	info, err := pm.GetTheme("ocean")

@@ -121,6 +121,12 @@ func NewModel(root common.Orchestrator, renderer *glamour.TermRenderer, cfg *con
 	return m
 }
 
+// GetRenderer returns a glamour renderer word-wrapped at width, built from
+// the active theme's style bytes (activeThemeStyles, set by ApplyTheme —
+// falls back to the bundled LateTheme when no theme has been applied).
+// Renderers are cached per-width since callers request one per rendered
+// block at that block's own width; ApplyTheme invalidates the cache via
+// ReloadTheme so the next call picks up the new theme.
 func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 	if width < 1 {
 		width = 80
@@ -128,8 +134,12 @@ func (m *Model) GetRenderer(width int) *glamour.TermRenderer {
 	if m.cachedRenderer != nil && m.cachedRendererWidth == width {
 		return m.cachedRenderer
 	}
+	styles := m.activeThemeStyles
+	if styles == nil {
+		styles = LateTheme
+	}
 	r, _ := glamour.NewTermRenderer(
-		glamour.WithStylesFromJSONBytes(LateTheme),
+		glamour.WithStylesFromJSONBytes(styles),
 		glamour.WithWordWrap(width),
 		glamour.WithPreservedNewLines(),
 	)
@@ -166,7 +176,7 @@ func (m *Model) ApplyTheme(info *ThemeEntry) error {
 	if info == nil {
 		return fmt.Errorf("ApplyTheme: nil theme")
 	}
-	merged, err := ResolveRenderTheme(info.ID, info.Glamour, info.Palette)
+	merged, err := ResolveRenderTheme(info.ID, info.Glamour)
 	if err != nil {
 		return fmt.Errorf("resolve theme %q: %w", info.ID, err)
 	}
@@ -187,6 +197,11 @@ func (m *Model) ApplyTheme(info *ThemeEntry) error {
 		return fmt.Errorf("build renderer for %q: %w", info.ID, err)
 	}
 
+	// activeThemeStyles is what GetRenderer rebuilds from at other widths
+	// (e.g. per-block rendering) — without this, only the fixed-width
+	// renderer above (used for the chat viewport) reflected the theme
+	// change, and markdown block rendering kept using the bundled LateTheme.
+	m.activeThemeStyles = merged
 	m.ReloadTheme(renderer)
 	m.SelectedTheme = info.ID
 

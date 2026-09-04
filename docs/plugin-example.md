@@ -246,11 +246,6 @@ TUI's `/themes` command exposes them in the picker.
 ```json
 {
   "name": "ocean",
-  "palette": {
-    "bg":     "#001f33",
-    "fg":     "#bce0ff",
-    "accent": "#5fc8ff"
-  },
   "glamour": {
     "document":  { "color": "#bce0ff" },
     "heading":   { "color": "#5fc8ff", "bold": true },
@@ -402,7 +397,7 @@ A short rationale for the design choices that aren't obvious.
 | `onToolCall` **returns** JSON             | Demonstrates the gate-via-mutate contract — the most powerful hook.   |
 | `onToolResult` only writes to stderr      | Demonstrates the observation use case; the hook can also mutate the result by printing JSON to stdout. |
 | `late.tools[*]` instead of MCP for `lookup` | Demonstrates the simpler "no-server" path inline tools support.       |
-| `themes` with both palette and glamour   | Shows the two parts of a plugin theme (semantic colors + style overrides). |
+| `themes`                                  | Shows a plugin theme's Glamour style overrides.                       |
 | One global install, one `--project` install | Both scopes are first-class; pick whichever matches the rollout.    |
 
 ---

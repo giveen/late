@@ -597,6 +597,114 @@ func TestSavePluginMeta_PersistsEnabledField(t *testing.T) {
 	}
 }
 
+// TestSavePluginMeta_LocalPluginPersistsDisabledAcrossReload is a
+// regression test: SavePluginMeta used to no-op entirely for local
+// dev-symlink plugins (to avoid polluting the linked source tree), which
+// meant `late plugin disable` had no lasting effect on them — the plugin
+// came back Enabled: true on every restart. Disabling now persists to the
+// global plugin state override file instead (see state.go), and
+// LoadPluginMeta applies it back on the next discovery.
+func TestSavePluginMeta_LocalPluginPersistsDisabledAcrossReload(t *testing.T) {
+	xdgRoot := t.TempDir()
+	// Sandbox pluginStatePath() (~/.config/late/plugins.json) so this test
+	// cannot touch the real user's config — see the identical rationale in
+	// TestHandlePluginRemove_PurgesStaleSkillSymlink.
+	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+
+	globalDir := t.TempDir()
+	sourceDir := t.TempDir()
+	pkg := PackageJSON{Name: "local-plugin", Version: "1.0.0", Late: &LateManifest{}}
+	b, _ := json.Marshal(pkg)
+	if err := os.WriteFile(filepath.Join(sourceDir, "package.json"), b, 0644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	pm := NewPluginManager(globalDir)
+	installed, err := InstallFromLocal(pm, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallFromLocal: %v", err)
+	}
+	if installed.SourceType != "local" {
+		t.Fatalf("test setup: expected SourceType local, got %q", installed.SourceType)
+	}
+	if !installed.Enabled {
+		t.Fatal("test setup: expected a freshly installed local plugin to be enabled")
+	}
+
+	// Disable it, mirroring handlePluginEnable's flow.
+	installed.Enabled = false
+	if err := SavePluginMeta(installed); err != nil {
+		t.Fatalf("SavePluginMeta: %v", err)
+	}
+
+	// The disable must not have written into the linked source tree —
+	// that's the entire reason local plugins skip the per-directory write.
+	if _, err := os.Stat(filepath.Join(sourceDir, ".late-plugin.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected no .late-plugin.json written into the local source dir, stat err=%v", err)
+	}
+
+	// Simulate a restart: discover from scratch and confirm the disabled
+	// state survived via the global override file.
+	pm2 := NewPluginManager(globalDir)
+	if err := pm2.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	reloaded := pm2.Plugin("local-plugin")
+	if reloaded == nil {
+		t.Fatal("expected local-plugin to still be discovered after reload")
+	}
+	if reloaded.Enabled {
+		t.Error("expected the disabled state to persist across reload for a local plugin")
+	}
+}
+
+// TestRemovePlugin_ClearsLocalDisabledOverride guards against a leak in
+// the global plugin state file: removing a disabled local plugin must
+// clear its override entry, so relinking a different plugin under the
+// same name later doesn't silently inherit a stale disabled state.
+func TestRemovePlugin_ClearsLocalDisabledOverride(t *testing.T) {
+	xdgRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+
+	globalDir := t.TempDir()
+	sourceDir := t.TempDir()
+	pkg := PackageJSON{Name: "local-plugin", Version: "1.0.0", Late: &LateManifest{}}
+	b, _ := json.Marshal(pkg)
+	if err := os.WriteFile(filepath.Join(sourceDir, "package.json"), b, 0644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	pm := NewPluginManager(globalDir)
+	installed, err := InstallFromLocal(pm, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallFromLocal: %v", err)
+	}
+	installed.Enabled = false
+	if err := SavePluginMeta(installed); err != nil {
+		t.Fatalf("SavePluginMeta: %v", err)
+	}
+
+	overrides, err := loadDisabledOverrides()
+	if err != nil {
+		t.Fatalf("loadDisabledOverrides: %v", err)
+	}
+	if !overrides["local-plugin"] {
+		t.Fatal("test setup: expected override recorded before remove")
+	}
+
+	if _, err := RemovePlugin(pm, "local-plugin"); err != nil {
+		t.Fatalf("RemovePlugin: %v", err)
+	}
+
+	overrides, err = loadDisabledOverrides()
+	if err != nil {
+		t.Fatalf("loadDisabledOverrides after remove: %v", err)
+	}
+	if overrides["local-plugin"] {
+		t.Error("expected the disabled override to be cleared after RemovePlugin")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

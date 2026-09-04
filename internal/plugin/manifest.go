@@ -427,13 +427,17 @@ func isSymlink(path string) bool {
 // writing, force the file's mtime to "now" so the PollingWatcher's snapshot
 // always detects the change even on filesystems that coalesce rapid writes.
 //
-// Local dev-symlink plugins are skipped: the plugin directory is a symlink
-// into the developer's source tree, and writing through it would pollute
-// the source with Late's cached metadata (which then overrides later
-// manifest edits). Their install provenance is re-derived on every load.
+// Local dev-symlink plugins skip the per-directory write below: the plugin
+// directory is a symlink into the developer's source tree, and writing
+// through it would pollute the source with Late's cached metadata (which
+// then overrides later manifest edits). Their install provenance is
+// re-derived on every load. The Enabled bit is the one thing that still
+// needs to persist across restarts for a local plugin, so it's recorded
+// instead in the global override file (see setDisabledOverride) —
+// LoadPluginMeta applies it back on load.
 func SavePluginMeta(plugin *InstalledPlugin) error {
 	if plugin.SourceType == "local" {
-		return nil
+		return setDisabledOverride(plugin.Name, !plugin.Enabled)
 	}
 	metaPath := filepath.Join(plugin.Path, ".late-plugin.json")
 	data, err := json.MarshalIndent(plugin, "", "  ")
@@ -457,12 +461,23 @@ func SavePluginMeta(plugin *InstalledPlugin) error {
 // file through the symlink). The meta file only supplies what package.json
 // cannot carry: install provenance (Source/SourceType) and the user's
 // Enabled preference.
+//
+// Local plugins never have a .late-plugin.json (see SavePluginMeta), so
+// they always take the fallback LoadPlugin(dir) path below and always come
+// back Enabled: true from buildPlugin — applyLocalDisabledOverride patches
+// that with whatever `late plugin disable` last recorded in the global
+// override file, so the preference survives across restarts.
 func LoadPluginMeta(dir string) (*InstalledPlugin, error) {
 	metaPath := filepath.Join(dir, ".late-plugin.json")
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return LoadPlugin(dir)
+			fresh, err := LoadPlugin(dir)
+			if err != nil {
+				return nil, err
+			}
+			applyLocalDisabledOverride(fresh)
+			return fresh, nil
 		}
 		return nil, fmt.Errorf("failed to read %s: %w", metaPath, err)
 	}
@@ -490,6 +505,26 @@ func LoadPluginMeta(dir string) (*InstalledPlugin, error) {
 		fresh.Enabled = meta.Enabled
 		fresh.Path = dir
 	}
+	applyLocalDisabledOverride(fresh)
 
 	return fresh, nil
+}
+
+// applyLocalDisabledOverride patches plugin.Enabled from the global plugin
+// state file when plugin is a local dev-symlink (the only source type
+// whose Enabled bit isn't already durably persisted elsewhere). A read
+// failure is logged and otherwise ignored — Enabled just falls back to
+// whatever LoadPlugin/the meta snapshot already set.
+func applyLocalDisabledOverride(plugin *InstalledPlugin) {
+	if plugin == nil || plugin.SourceType != "local" {
+		return
+	}
+	overrides, err := loadDisabledOverrides()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load plugin state overrides: %v\n", err)
+		return
+	}
+	if overrides[plugin.Name] {
+		plugin.Enabled = false
+	}
 }

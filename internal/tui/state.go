@@ -73,11 +73,10 @@ var AvailableCommands = []CommandDef{
 // renderer at runtime. We keep this struct local to the TUI (rather than
 // importing plugin.ThemeInfo directly) to preserve the package layering.
 type ThemeEntry struct {
-	ID         string            // "<pluginname>:<themename>"
-	PluginName string            // plugin that owns the theme
-	ThemeName  string            // bare theme name (matches the JSON "name" field)
-	Glamour    map[string]any    // glamour style overrides, merged into base LateTheme
-	Palette    map[string]string // semantic palette (bg/fg/accent/...) for downstream consumers
+	ID         string         // "<pluginname>:<themename>"
+	PluginName string         // plugin that owns the theme
+	ThemeName  string         // bare theme name (matches the JSON "name" field)
+	Glamour    map[string]any // glamour style overrides, merged into base LateTheme
 }
 
 // RenderBlock represents the line bounds of a rendered block in the viewport.
@@ -246,6 +245,11 @@ type Model struct {
 	cachedRenderer      *glamour.TermRenderer
 	cachedRendererWidth int
 	LastFocusedID       string // To detect context switches and force viewport refresh
+
+	// activeThemeStyles is the glamour style JSON GetRenderer builds new
+	// per-width renderers from. Set by ApplyTheme; nil means "use the
+	// bundled LateTheme" (the default before any theme is applied).
+	activeThemeStyles []byte
 }
 
 func (m *Model) GetAgentState(id string) *AppState {

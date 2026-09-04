@@ -10,7 +10,7 @@ import (
 // output is byte-for-byte equal to the bundled LateTheme (no wasted
 // copy, no schema-pollution markers).
 func TestResolveRenderTheme_EmptyReturnsBase(t *testing.T) {
-	got, err := ResolveRenderTheme("", nil, nil)
+	got, err := ResolveRenderTheme("", nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestResolveRenderTheme_MergesGlamourKeys(t *testing.T) {
 			"color": "#FF0000",
 		},
 	}
-	got, err := ResolveRenderTheme("p:red", mod, nil)
+	got, err := ResolveRenderTheme("p:red", mod)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -46,26 +46,5 @@ func TestResolveRenderTheme_MergesGlamourKeys(t *testing.T) {
 	var parsed map[string]any
 	if err := json.Unmarshal(got, &parsed); err != nil {
 		t.Fatalf("merged theme is not valid json: %v", err)
-	}
-}
-
-// TestResolveRenderTheme_PaletteAttached: a palette is staged under the
-// specialized `_late_palette` key so it doesn't fight glamour's schema
-// but downstream consumers can introspect it.
-func TestResolveRenderTheme_PaletteAttached(t *testing.T) {
-	palette := map[string]string{
-		"bg":     "#000000",
-		"accent": "#E5A85C",
-	}
-	got, err := ResolveRenderTheme("plugin:ocean", nil, palette)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	s := string(got)
-	if !strings.Contains(s, "_late_palette") {
-		t.Fatal("expected _late_palette marker")
-	}
-	if !strings.Contains(s, "E5A85C") {
-		t.Fatal("expected palette colour in output")
 	}
 }
