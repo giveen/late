@@ -39,3 +39,18 @@ func TestToolEnabled_LegacyColonKeyFallback(t *testing.T) {
 		t.Error("expected an unconfigured tool to default to enabled")
 	}
 }
+
+// TestToolEnabled_BareNameFallback guards compatibility with configs
+// written before tool names were namespaced at all (e.g. "list_files":
+// false), which must still disable a namespaced MCP tool name via
+// common.BareToolName's fallback. A namespaced-key entry still takes
+// priority over the bare-name form.
+func TestToolEnabled_BareNameFallback(t *testing.T) {
+	if toolEnabled(map[string]bool{"list_files": false}, "graph-rag__list_files") {
+		t.Fatal("legacy bare-name setting did not disable a namespaced MCP tool")
+	}
+	enabledTools := map[string]bool{"list_files": false, "graph-rag__list_files": true}
+	if !toolEnabled(enabledTools, "graph-rag__list_files") {
+		t.Fatal("namespaced setting did not override the bare-name setting")
+	}
+}
