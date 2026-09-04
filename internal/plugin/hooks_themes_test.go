@@ -262,6 +262,41 @@ func TestRunHook_LargePayloadPassesThrough(t *testing.T) {
 	}
 }
 
+// 4c. boundedWriter: the io.Writer runHook uses to cap captured
+// stdout/stderr during the copy from the child process (rather than
+// buffering everything and truncating after cmd.Run() returns). Write
+// must never report an error — exec.Cmd treats a copy error from its
+// Stdout/Stderr writer as a fatal failure of the running command, which
+// would abort a hook mid-execution instead of just dropping its excess
+// output.
+func TestBoundedWriter_CapsWithoutErroringOnOverflow(t *testing.T) {
+	w := &boundedWriter{maxBytes: 10}
+
+	n, err := w.Write([]byte("hello "))
+	if err != nil || n != 6 {
+		t.Fatalf("first write: n=%d err=%v, want n=6 err=nil", n, err)
+	}
+
+	// Pushes well past the 10-byte cap.
+	n, err = w.Write([]byte("world!!!!!"))
+	if err != nil || n != 10 {
+		t.Fatalf("overflowing write: n=%d err=%v, want n=10 err=nil (must not error)", n, err)
+	}
+	if got := w.String(); got != "hello worl" {
+		t.Fatalf("expected content capped at %q, got %q", "hello worl", got)
+	}
+
+	// A write after the cap is already full must still report success
+	// (all bytes "accepted") without changing the retained content.
+	n, err = w.Write([]byte("more"))
+	if err != nil || n != 4 {
+		t.Fatalf("post-cap write: n=%d err=%v, want n=4 err=nil", n, err)
+	}
+	if got := w.String(); got != "hello worl" {
+		t.Fatalf("content changed after cap reached: %q", got)
+	}
+}
+
 // 5. HookedMessage: empty/no hooks returns input unchanged
 func TestHookedMessage_NoHooksReturnsInput(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())

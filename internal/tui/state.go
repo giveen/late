@@ -217,7 +217,8 @@ type Model struct {
 
 	// Plugin-provided message hook. Set at startup from
 	// (*PluginManager).HookedMessage. When nil, outgoing user messages are
-	// sent through unchanged. See Model.ApplyMessageHook.
+	// sent through unchanged; otherwise submitMessage runs it
+	// asynchronously (see messageHookResultMsg in update.go).
 	MessageHook func(string) string
 
 	// Plugin-provided slash-command handler. Set at startup from

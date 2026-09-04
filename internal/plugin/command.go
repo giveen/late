@@ -64,8 +64,8 @@ func HandlePluginCommand(pm *PluginManager, args []string) bool {
 			fmt.Fprintln(os.Stderr, "")
 			fmt.Fprintln(os.Stderr, "Link a local directory as a plugin (dev mode). The path")
 			fmt.Fprintln(os.Stderr, "must be an existing directory containing a native-Late")
-			fmt.Fprintln(os.Stderr, "(`late`-keyed package.json) or a Claude Code")
-			fmt.Fprintln(os.Stderr, "(.claude-plugin/plugin.json) plugin manifest.")
+			fmt.Fprintln(os.Stderr, "(`late`-keyed package.json) or an omp (`omp`-keyed")
+			fmt.Fprintln(os.Stderr, "package.json) plugin manifest.")
 			return true
 		}
 		handlePluginLink(pm, args[1:])

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"late/internal/assets"
@@ -408,12 +409,18 @@ func main() {
 	// pluginToolNames records every plugin-provided tool registered here so
 	// the watcher can unregister the stale set on the next plugin change.
 	var pluginToolNames []string
+	// usedToolNames records every name registered below (MCP first, then
+	// inline) so inline tools are deduped against MCP names too — without
+	// this, a plugin's inline tool can silently overwrite an MCP-backed
+	// tool that sanitizes to the same namespaced name.
+	usedToolNames := make(map[string]bool)
 	for _, t := range mcpClient.GetTools() {
 		if !toolEnabled(enabledTools, t.Name()) {
 			continue
 		}
 		sess.Registry.Register(t)
 		pluginToolNames = append(pluginToolNames, t.Name())
+		usedToolNames[t.Name()] = true
 	}
 
 	// Register inline plugin tools (declared in the manifest's `late.tools`
@@ -422,7 +429,7 @@ func main() {
 	// onToolCall hooks, confirmations, and tool-result reporting all work
 	// uniformly for plugin-declared tools.
 	if pluginManager != nil {
-		for _, t := range pluginManager.GetInlineTools() {
+		for _, t := range pluginManager.GetInlineTools(usedToolNames) {
 			if !toolEnabled(enabledTools, t.Name) {
 				continue
 			}
@@ -548,6 +555,18 @@ func main() {
 
 	p := tea.NewProgram(model)
 
+	// toolSync serializes plugin/MCP tool-registry refreshes triggered from
+	// multiple goroutines: the plugin filesystem watcher below and MCP
+	// servers' own tools/list_changed notifications (wired via
+	// mcpClient.OnToolsChanged just below). Both paths recompute the full
+	// current tool/command/theme set and diff it against the last set sent
+	// to the TUI, so the two triggers can't race each other into sending a
+	// stale diff.
+	toolSync := &pluginToolSync{prev: append([]string(nil), pluginToolNames...)}
+	mcpClient.OnToolsChanged = func() {
+		toolSync.refresh(p, mcpClient, pluginManager, enabledTools)
+	}
+
 	// Start plugin filesystem watcher. It runs even with zero plugins so
 	// the first install is picked up without a restart. On every change it
 	// fully re-registers the plugin surfaces: skills, MCP sessions, tools,
@@ -560,9 +579,6 @@ func main() {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		// prevToolNames is owned exclusively by this goroutine (the TUI
-		// loop applies the unregister/register via the message below).
-		prevToolNames := append([]string(nil), pluginToolNames...)
 		go watcher.Start(ctx, func() {
 			// 1. Re-sync skill dirs (creates new ones, prunes stale ones
 			// for removed/disabled plugins). When Late started with zero
@@ -580,7 +596,10 @@ func main() {
 
 			// 2. Reconcile MCP sessions against the desired set: user config
 			// + current plugin servers. Removed or disabled plugins drop
-			// their servers (sessions closed); new ones connect.
+			// their servers (sessions closed); new ones connect. A server
+			// whose command/args/env/url/dir changed while its name stayed
+			// the same is closed and reconnected too — see
+			// mcp.Client.Reconcile.
 			desired := cloneMCPConfig(baseMCPConfig)
 			pluginMCP := pluginManager.BuildMCPConfigMap()
 			for name, srv := range pluginMCP {
@@ -598,50 +617,16 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Warning: failed to reconcile plugin MCP servers: %v\n", err)
 			}
 
-			// 3. Collect the current plugin-provided tool set (MCP adapters
-			// + inline tools). The TUI loop applies the registry diff.
-			var added []common.Tool
-			for _, t := range mcpClient.GetTools() {
-				if toolEnabled(enabledTools, t.Name()) {
-					added = append(added, t)
-				}
-			}
-			for _, t := range pluginManager.GetInlineTools() {
-				if !toolEnabled(enabledTools, t.Name) {
-					continue
-				}
-				added = append(added, pluginInlineTool{
-					name:        t.Name,
-					description: t.Description,
-					parameters:  t.Parameters,
-					runner:      t.Runner,
-				})
-			}
+			// 3. Rebuild tool-call middlewares so onToolCall/onToolResult
+			// hooks from plugins installed, edited, or removed since
+			// startup take effect immediately instead of only after a
+			// restart (BuildHookMiddlewares/BuildToolResultMiddlewares
+			// snapshot live from pluginManager on every call — only the
+			// SetMiddlewares call itself was previously startup-only).
+			rootAgent.SetMiddlewares(buildMiddlewares(pluginManager, p, sess.Registry))
 
-			// 4. Refresh commands and themes.
-			cmds := pluginManager.PluginCommands()
-			pluginThemes := pluginManager.AllThemes()
-			entries := make([]tui.ThemeEntry, len(pluginThemes))
-			for i, info := range pluginThemes {
-				entries[i] = tui.ThemeEntry{
-					ID:         info.ID,
-					PluginName: info.PluginName,
-					ThemeName:  info.ThemeName,
-					Glamour:    info.Glamour,
-					Palette:    info.Palette,
-				}
-			}
-
-			p.Send(tui.PluginChangeMsg{
-				Commands:     cmds,
-				Themes:       entries,
-				RemovedTools: prevToolNames,
-				AddedTools:   added,
-			})
-			prevToolNames = prevToolNames[:0]
-			for _, t := range added {
-				prevToolNames = append(prevToolNames, t.Name())
-			}
+			// 4. Refresh the tool/command/theme set the TUI sees.
+			toolSync.refresh(p, mcpClient, pluginManager, enabledTools)
 		})
 	}
 
@@ -657,20 +642,10 @@ func main() {
 		}
 		rootAgent.SetContext(ctx)
 
-		// Set middlewares. Middlewares are applied innermost-last, so the
-		// plugin onToolCall hooks run FIRST (outermost), then the TUI
-		// confirmation, then the onToolResult hooks. Confirmation must see
-		// the arguments AFTER plugins mutated them — otherwise a plugin
-		// could change the arguments after the user approved the call.
-		mws := []common.ToolMiddleware{}
-		if pluginManager != nil {
-			mws = append(mws, pluginManager.BuildHookMiddlewares()...)
-		}
-		mws = append(mws, tui.TUIConfirmMiddleware(p, sess.Registry))
-		if pluginManager != nil {
-			mws = append(mws, pluginManager.BuildToolResultMiddlewares()...)
-		}
-		rootAgent.SetMiddlewares(mws)
+		// Set middlewares (see buildMiddlewares for ordering rationale).
+		// This is also rebuilt by the plugin watcher's onChanged callback
+		// above so hook changes take effect without a restart.
+		rootAgent.SetMiddlewares(buildMiddlewares(pluginManager, p, sess.Registry))
 
 		// Start forwarding events from the root agent to the TUI
 		ForwardOrchestratorEvents(p, rootAgent)
@@ -737,13 +712,114 @@ func newModelClient(ctx context.Context, setting appconfig.ModelSetting, enableI
 	return c
 }
 
+// buildMiddlewares assembles the tool-call middleware chain for rootAgent.
+// Middlewares are applied innermost-last, so the plugin onToolCall hooks
+// run FIRST (outermost), then the TUI confirmation, then the onToolResult
+// hooks. Confirmation must see the arguments AFTER plugins mutated them —
+// otherwise a plugin could change the arguments after the user approved
+// the call. Called both at startup and by the plugin watcher's onChanged
+// callback so hook changes take effect without a restart.
+func buildMiddlewares(pluginManager *plugin.PluginManager, p *tea.Program, registry *common.ToolRegistry) []common.ToolMiddleware {
+	mws := []common.ToolMiddleware{}
+	if pluginManager != nil {
+		mws = append(mws, pluginManager.BuildHookMiddlewares()...)
+	}
+	mws = append(mws, tui.TUIConfirmMiddleware(p, registry))
+	if pluginManager != nil {
+		mws = append(mws, pluginManager.BuildToolResultMiddlewares()...)
+	}
+	return mws
+}
+
+// pluginToolSync serializes tool/command/theme refreshes sent to the TUI.
+// Two independent triggers can fire it: the plugin filesystem watcher (a
+// plugin was installed/removed/edited) and an MCP server's own
+// tools/list_changed notification (wired via mcp.Client.OnToolsChanged).
+// Without the mutex, concurrent refreshes could interleave and send a
+// diff computed against a stale `prev`.
+type pluginToolSync struct {
+	mu   sync.Mutex
+	prev []string
+}
+
+// refresh recomputes the full current tool set (MCP + inline, with
+// cross-source name collisions resolved the same way as the initial
+// registration in main()), plus the current plugin commands/themes, and
+// sends one PluginChangeMsg diffed against the last set this synced. The
+// full command/theme set is always included — never a partial message —
+// so a tools-only trigger (an MCP tool list change) can't blank out
+// plugin commands/themes in the TUI.
+func (s *pluginToolSync) refresh(p *tea.Program, mcpClient *mcp.Client, pluginManager *plugin.PluginManager, enabledTools map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	used := make(map[string]bool)
+	var added []common.Tool
+	for _, t := range mcpClient.GetTools() {
+		if !toolEnabled(enabledTools, t.Name()) {
+			continue
+		}
+		added = append(added, t)
+		used[t.Name()] = true
+	}
+
+	var cmds []string
+	var entries []tui.ThemeEntry
+	if pluginManager != nil {
+		for _, t := range pluginManager.GetInlineTools(used) {
+			if !toolEnabled(enabledTools, t.Name) {
+				continue
+			}
+			added = append(added, pluginInlineTool{
+				name:        t.Name,
+				description: t.Description,
+				parameters:  t.Parameters,
+				runner:      t.Runner,
+			})
+		}
+
+		cmds = pluginManager.PluginCommands()
+		pluginThemes := pluginManager.AllThemes()
+		entries = make([]tui.ThemeEntry, len(pluginThemes))
+		for i, info := range pluginThemes {
+			entries[i] = tui.ThemeEntry{
+				ID:         info.ID,
+				PluginName: info.PluginName,
+				ThemeName:  info.ThemeName,
+				Glamour:    info.Glamour,
+				Palette:    info.Palette,
+			}
+		}
+	}
+
+	p.Send(tui.PluginChangeMsg{
+		Commands:     cmds,
+		Themes:       entries,
+		RemovedTools: s.prev,
+		AddedTools:   added,
+	})
+	s.prev = s.prev[:0]
+	for _, t := range added {
+		s.prev = append(s.prev, t.Name())
+	}
+}
+
 // toolEnabled reports whether a namespaced tool name is enabled in the
-// enabledTools config: the namespaced name takes priority, then the bare
-// name (the part after the last "__" or ":" separator) so configs written
-// before namespacing keep working. Unknown tools default to enabled.
+// enabledTools config: the namespaced name takes priority, then the
+// pre-namespacing "server:tool" form (reconstructed from "server__tool"),
+// then the bare name (the part after the last "__" or ":" separator) so
+// configs written before namespacing — either the old colon-joined keys
+// or plain bare-name keys — keep working. Unknown tools default to
+// enabled.
 func toolEnabled(enabledTools map[string]bool, name string) bool {
 	if v, ok := enabledTools[name]; ok {
 		return v
+	}
+	if idx := strings.Index(name, "__"); idx >= 0 {
+		legacy := name[:idx] + ":" + name[idx+2:]
+		if v, ok := enabledTools[legacy]; ok {
+			return v
+		}
 	}
 	if v, ok := enabledTools[common.BareToolName(name)]; ok {
 		return v

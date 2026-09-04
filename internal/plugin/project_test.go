@@ -13,7 +13,8 @@ import (
 // manifest round-trip. The `"late": {}` block is required so LoadPlugin
 // recognizes the directory as a valid native-Late plugin; without it,
 // the loader fails with "no recognized plugin format" because the
-// package.json has no `late`, `omp`, or `.claude-plugin/plugin.json`.
+// package.json has no `late` or `omp` field (the only two formats
+// LoadPlugin recognizes).
 func writeBarePlugin(t *testing.T, dir, name string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0755); err != nil {

@@ -1,9 +1,49 @@
 package plugin
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+// TestSnapshotDir_FollowsSymlinks is a regression test: InstallFromNpm and
+// InstallFromLocal always install a plugin as a symlink into the plugins
+// dir (only InstallFromGit produces a real directory), but os.ReadDir's
+// entry.IsDir() reports false for a symlink even when it points at a
+// directory. snapshotDir must resolve entries (os.Stat, which follows
+// symlinks) rather than gating on entry.IsDir(), or npm/local plugin
+// installs, removals, and enable/disable toggles are never detected.
+func TestSnapshotDir_FollowsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	pluginsDir := filepath.Join(root, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	realDir := filepath.Join(root, "real-target", "my-plugin")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, ".late-plugin.json"), []byte(`{"enabled":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(pluginsDir, "my-plugin")); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &PollingWatcher{}
+	snapshot := make(map[string]pluginSnapshotEntry)
+	w.snapshotDir(pluginsDir, snapshot)
+
+	entry, ok := snapshot["my-plugin"]
+	if !ok {
+		t.Fatalf("expected symlinked plugin dir to be snapshotted, got %v", snapshot)
+	}
+	if !entry.hasLateFile || !entry.enabled {
+		t.Errorf("expected hasLateFile=true enabled=true, got %+v", entry)
+	}
+}
 
 // TestSnapshotChanged_NoChange verifies that identical snapshots do not trigger a change.
 func TestSnapshotChanged_NoChange(t *testing.T) {

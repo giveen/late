@@ -204,16 +204,17 @@ func (m *Model) ApplyTheme(info *ThemeEntry) error {
 	return nil
 }
 
-// ApplyMessageHook returns the user text after running it through any
-// plugin-provided MessageHook. If no hook is set, the input is returned
-// unchanged. This is the single integration point the chat submit handler
-// uses, so adding more transformations later (e.g. local command rewrite)
-// only has to touch this method.
-func (m *Model) ApplyMessageHook(text string) string {
-	if m.MessageHook == nil || text == "" {
+// applyMessageHook returns text after running it through hook (the
+// plugin-provided MessageHook, if any), or unchanged if hook is nil or
+// text is empty. It takes the hook function rather than a *Model so
+// submitMessage's async onMessageSend path (see messageHookResultMsg in
+// update.go) can run it inside a tea.Cmd closure without capturing the
+// whole Model.
+func applyMessageHook(hook func(string) string, text string) string {
+	if hook == nil || text == "" {
 		return text
 	}
-	out := m.MessageHook(text)
+	out := hook(text)
 	if out == "" {
 		// Hook explicitly cleared the message — treat as a no-op rather
 		// than swallowing the user's intent silently.

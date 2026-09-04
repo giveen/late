@@ -29,13 +29,6 @@ type OmpManifest struct {
 	Hooks      *LateHooksManifest  `json:"hooks,omitempty"`
 }
 
-// ClaudePluginManifest represents the .claude-plugin/plugin.json manifest.
-type ClaudePluginManifest struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Version     string `json:"version,omitempty"`
-}
-
 // LateCommands is a backward-compatible adapter for the "commands" field.
 // Plugins written before command handlers existed declare commands as a
 // flat array of strings; plugins written after can declare objects with
@@ -284,13 +277,12 @@ func resolveArgs(pluginDir string, args []string) []string {
 }
 
 // LoadPlugin loads a plugin from the specified directory. It recognizes
-// three plugin formats in order of precedence:
+// two plugin formats in order of precedence:
 //
 //  1. package.json with "late" field (native Late format)
 //  2. package.json with "omp" field  (Oh My Pi / omp format) — translated at load time
-//  3. .claude-plugin/plugin.json + auto-detected surfaces (Claude Code format)
 //
-// For formats 2 and 3, the manifest is translated into a LateManifest so the rest
+// For format 2, the manifest is translated into a LateManifest so the rest
 // of the system (skill registration, MCP, commands, hooks) works identically.
 func LoadPlugin(dir string) (*InstalledPlugin, error) {
 	plugin, err := tryLoadNativeLate(dir)
@@ -299,11 +291,6 @@ func LoadPlugin(dir string) (*InstalledPlugin, error) {
 	}
 
 	plugin, err = tryLoadOmp(dir)
-	if err == nil {
-		return plugin, nil
-	}
-
-	plugin, err = tryLoadClaudeCode(dir)
 	if err == nil {
 		return plugin, nil
 	}
@@ -397,82 +384,6 @@ func translateOmpToLate(omp *OmpManifest) *LateManifest {
 	// entry points for the omp harness itself and don't map to Late surfaces.
 
 	return late
-}
-
-// tryLoadClaudeCode loads a plugin in Claude Code format:
-//   - .claude-plugin/plugin.json for metadata
-//   - skills/ directory for skills
-//   - .mcp.json at root for MCP servers
-//
-// Claude Code's `commands/*.md` and `hooks/hooks.json` surfaces are NOT
-// translated (see the NOTE in the loader body) — both were parsed without
-// ever being wired up, so they were removed until they can be implemented
-// cleanly on top of Late's own manifest.
-func tryLoadClaudeCode(dir string) (*InstalledPlugin, error) {
-	claudeDir := filepath.Join(dir, ".claude-plugin")
-	manifestPath := filepath.Join(claudeDir, "plugin.json")
-
-	data, err := os.ReadFile(manifestPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no .claude-plugin/plugin.json in %s", dir)
-		}
-		return nil, fmt.Errorf("failed to read %s: %w", manifestPath, err)
-	}
-
-	var manifest ClaudePluginManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("failed to parse %s: %w", manifestPath, err)
-	}
-
-	if err := validatePluginName(manifest.Name); err != nil {
-		return nil, fmt.Errorf("claude plugin at %s has invalid name: %w", dir, err)
-	}
-
-	late := &LateManifest{}
-
-	// Auto-detect skills/ directory
-	if info, err := os.Stat(filepath.Join(dir, "skills")); err == nil && info.IsDir() {
-		late.Skills = append(late.Skills, "skills/")
-	}
-
-	// NOTE: Claude Code `commands/*.md` and `hooks/hooks.json` surfaces are
-	// intentionally NOT auto-detected. The Markdown command files only
-	// contributed names with no usable content, and hooks.json was parsed
-	// then discarded — both integrations were removed so they can later be
-	// implemented cleanly on top of Late's own manifest format.
-
-	// Auto-detect .mcp.json at root (Claude Code style).
-	// Two formats exist in the wild:
-	//   {"mcpServers": {"name": {...}}}   — wrapped (omp/Late convention)
-	//   {"name": {"type":"sse","url":...}} — flat map (Claude Code convention)
-	mcpPath := filepath.Join(dir, ".mcp.json")
-	if mcpData, err := os.ReadFile(mcpPath); err == nil {
-		// Try wrapped format first
-		var wrapped struct {
-			McpServers map[string]MCPServerConfig `json:"mcpServers"`
-		}
-		if err := json.Unmarshal(mcpData, &wrapped); err == nil && len(wrapped.McpServers) > 0 {
-			late.MCP = &LateMCPManifest{Servers: wrapped.McpServers}
-		} else {
-			// Try flat format: top-level keys are server names
-			var flat map[string]json.RawMessage
-			if err := json.Unmarshal(mcpData, &flat); err == nil && len(flat) > 0 {
-				servers := make(map[string]MCPServerConfig, len(flat))
-				for name, raw := range flat {
-					var srv MCPServerConfig
-					if err := json.Unmarshal(raw, &srv); err == nil {
-						servers[name] = srv
-					}
-				}
-				if len(servers) > 0 {
-					late.MCP = &LateMCPManifest{Servers: servers}
-				}
-			}
-		}
-	}
-
-	return buildPlugin(dir, manifest.Name, manifest.Version, manifest.Description, late), nil
 }
 
 // buildPlugin constructs an InstalledPlugin and detects its source type.

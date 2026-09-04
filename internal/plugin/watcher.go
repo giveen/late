@@ -156,16 +156,20 @@ func (w *PollingWatcher) snapshotDir(dir string, snapshot map[string]pluginSnaps
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
 		if entry.Name() == "node_modules" || entry.Name() == ".cache" {
 			continue
 		}
 
+		// os.Stat (unlike entry.IsDir(), which reflects the raw entry type
+		// and is false for a symlink even when it points at a directory)
+		// follows symlinks — required because InstallFromNpm/InstallFromLocal
+		// always install via a symlink into the plugins dir; only
+		// InstallFromGit produces a real directory. Skipping on entry.IsDir()
+		// alone silently stopped the watcher from ever seeing npm/local
+		// plugin installs, removals, or enable/disable toggles.
 		dirPath := filepath.Join(dir, entry.Name())
 		info, err := os.Stat(dirPath)
-		if err != nil {
+		if err != nil || !info.IsDir() {
 			continue
 		}
 

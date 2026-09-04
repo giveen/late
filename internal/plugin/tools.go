@@ -38,7 +38,12 @@ type InlineTool struct {
 // endpoints. Disabled and nil-manifest plugins are skipped; a plugin
 // whose script path fails the containment check is silently skipped
 // with a stderr warning rather than crashing discovery.
-func (pm *PluginManager) GetInlineTools() []InlineTool {
+//
+// used pre-seeds names already taken by tools from other sources (e.g.
+// MCP-backed tools) so an inline tool can never silently overwrite one
+// registered from elsewhere; assigned names are recorded into it. A nil
+// map dedupes only within this call's own results, same as before.
+func (pm *PluginManager) GetInlineTools(used map[string]bool) []InlineTool {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
@@ -88,7 +93,7 @@ func (pm *PluginManager) GetInlineTools() []InlineTool {
 	for i, t := range tools {
 		names[i] = t.Name
 	}
-	uniq := common.DeduplicateToolNames(names, nil)
+	uniq := common.DeduplicateToolNames(names, used)
 	for i := range tools {
 		tools[i].Name = uniq[i]
 	}

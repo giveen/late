@@ -165,6 +165,84 @@ func TestUpdateNpmHappyPath(t *testing.T) {
 	}
 }
 
+// TestUpdateNpmHappyPath_ScopedPackageNestedSymlink is a regression test
+// for the scoped-npm-update directory bug: InstallFromNpm nests a scoped
+// plugin's symlink one level under the plugins root (plugins/@scope/name,
+// not plugins/name — see TestUpdateNpmHappyPath's setup, which places the
+// symlink directly at plugins/foo and so never exercised this path).
+// Update() must still resolve the plugins ROOT (not plugins/@scope) when
+// computing targetDir, or npm installs into
+// plugins/@scope/node_modules/@scope/name and the new symlink lands at
+// the doubly-nested plugins/@scope/@scope/name, leaving the real
+// plugins/@scope/name untouched.
+func TestUpdateNpmHappyPath_ScopedPackageNestedSymlink(t *testing.T) {
+	root := t.TempDir()
+	pluginsDir := filepath.Join(root, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugins dir: %v", err)
+	}
+	rec, cleanup := withExecSeams(t)
+	defer cleanup()
+
+	// Pre-install the scoped plugin exactly as InstallFromNpm produces it:
+	// plugins/@late/foo is a symlink to plugins/node_modules/@late/foo.
+	nodeModules := filepath.Join(pluginsDir, "node_modules", "@late", "foo")
+	linkTarget := filepath.Join(pluginsDir, "@late", "foo")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules/@late/foo: %v", err)
+	}
+	writeMinimalPluginManifest(t, nodeModules, "foo", "1.0.0", "@late/foo", "npm")
+	if err := os.MkdirAll(filepath.Dir(linkTarget), 0o755); err != nil {
+		t.Fatalf("mkdir @late parent: %v", err)
+	}
+	if err := os.Symlink(nodeModules, linkTarget); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	pm := NewPluginManager(pluginsDir)
+	if err := pm.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	discovered := pm.Plugin("foo")
+	if discovered == nil {
+		t.Fatalf("expected foo to be discovered")
+	}
+	if discovered.Path != linkTarget {
+		t.Fatalf("test setup: expected discovered path %q, got %q", linkTarget, discovered.Path)
+	}
+
+	if _, err := Update(pm, "foo", nil); err != nil {
+		t.Fatalf("Update(foo) err: %v", err)
+	}
+
+	calls := rec()
+	if len(calls) != 1 || calls[0].name != "npm" {
+		t.Fatalf("expected exactly 1 npm invocation, got %+v", calls)
+	}
+	prefixFound := false
+	for i, a := range calls[0].args {
+		if a == "--prefix" && i+1 < len(calls[0].args) {
+			prefixFound = true
+			if calls[0].args[i+1] != pluginsDir {
+				t.Fatalf("expected --prefix %q (the plugins root), got %q", pluginsDir, calls[0].args[i+1])
+			}
+		}
+	}
+	if !prefixFound {
+		t.Fatalf("expected --prefix flag in npm args, got %v", calls[0].args)
+	}
+
+	// The symlink must remain the single-nested plugins/@late/foo, not a
+	// doubly-nested plugins/@late/@late/foo.
+	if info, err := os.Lstat(linkTarget); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s to still be a symlink after update: %v", linkTarget, err)
+	}
+	doubled := filepath.Join(pluginsDir, "@late", "@late", "foo")
+	if _, err := os.Lstat(doubled); err == nil {
+		t.Fatalf("update incorrectly created doubly-nested path %s", doubled)
+	}
+}
+
 // TestUpdateLocalRefuses: Update on a local-source plugin returns a clear
 // refusal rather than mutating it.
 func TestUpdateLocalRefuses(t *testing.T) {

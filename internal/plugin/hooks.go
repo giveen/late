@@ -19,7 +19,18 @@ import (
 
 // Per-hook execution limits.
 const (
-	hookTimeout    = 15 * time.Second
+	hookTimeout = 15 * time.Second
+	// maxStdoutBytes bounds captured stdout during the copy from the child
+	// process. Stdout is the hook's actual return channel — it REPLACES
+	// tool call arguments, tool results, or the outgoing message text (see
+	// BuildHookMiddlewares/CallOnToolResultHooks/HookedMessage) — so this
+	// mirrors hookStdinMax's generosity rather than maxStderrBytes' much
+	// smaller log-line budget; it only guards against pathological
+	// (multi-hundred-MB) output, not realistic payload sizes.
+	maxStdoutBytes = hookStdinMax
+	// maxStderrBytes bounds captured stderr, which is only ever used for a
+	// single diagnostic log line (see the "[hook ...]" print below) — a
+	// small cap is intentional here.
 	maxStderrBytes = 4096
 	// hookStdinMax bounds the stdin payload sanity check. Payloads routinely
 	// exceed 256 bytes (tool arguments, tool results, full user messages),
@@ -28,6 +39,33 @@ const (
 	// bounds how long a script may consume it.
 	hookStdinMax = 16 << 20 // 16 MiB
 )
+
+// boundedWriter is an io.Writer that retains only the first maxBytes
+// written to it; everything beyond that is discarded. Write always
+// reports success (n == len(p), err == nil) — exec.Cmd treats a copy
+// error from its Stdout/Stderr writer as a fatal failure of the running
+// command, so a bounded writer that returned an error on overflow would
+// abort a hook mid-execution instead of just dropping its excess output.
+// Capping here (during the copy from the child process) rather than after
+// cmd.Run() returns is what keeps a noisy or malicious hook script from
+// buffering unbounded output in memory for the full 15s hookTimeout.
+type boundedWriter struct {
+	buf      bytes.Buffer
+	maxBytes int
+}
+
+func (b *boundedWriter) Write(p []byte) (int, error) {
+	if remaining := b.maxBytes - b.buf.Len(); remaining > 0 {
+		if len(p) < remaining {
+			remaining = len(p)
+		}
+		b.buf.Write(p[:remaining])
+	}
+	return len(p), nil
+}
+
+func (b *boundedWriter) Bytes() []byte  { return b.buf.Bytes() }
+func (b *boundedWriter) String() string { return b.buf.String() }
 
 // ToolCallHookPayload is written to the script's stdin when an OnToolCall
 // hook fires. Plugins can inspect tool name + raw arguments JSON.
@@ -84,18 +122,16 @@ func runHook(ctx context.Context, pluginDir string, scriptPath string, stdin []b
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &boundedWriter{maxBytes: maxStdoutBytes}
+	stderr := &boundedWriter{maxBytes: maxStderrBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err = cmd.Run()
 
-	// Capture and forward stderr (truncated)
-	stderrBytes := stderr.Bytes()
-	if len(stderrBytes) > maxStderrBytes {
-		stderrBytes = stderrBytes[:maxStderrBytes]
-	}
-	stderrStr := strings.TrimRight(string(stderrBytes), "\n")
+	// Capture and forward stderr (already capped to maxStderrBytes during
+	// the copy above, not sliced after the fact).
+	stderrStr := strings.TrimRight(stderr.String(), "\n")
 	if stderrStr != "" {
 		fmt.Fprintf(os.Stderr, "[hook %s:%s] %s\n", filepath.Base(pluginDir), filepath.Base(resolved), stderrStr)
 	}

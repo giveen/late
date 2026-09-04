@@ -283,7 +283,9 @@ func (pm *PluginManager) RegisterPluginSkills(skillsDir string) error {
 			} else {
 				// Subdir layout: enumerate one level of subdirectories,
 				// each expected to contain its own SKILL.md. This matches
-				// the documented Claude Code / Agent Skills convention.
+				// the documented Agent Skills convention and is
+				// manifest-format-agnostic — native Late and omp plugins
+				// both use it.
 				entries, rerr := os.ReadDir(skillPath)
 				if rerr != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "Warning: plugin %s skill dir %s unreadable: %v\n", p.Name, skillPath, rerr)

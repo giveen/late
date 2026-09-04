@@ -23,6 +23,21 @@ type Client struct {
 	sessions  map[string]*mcp.ClientSession
 	tools     map[string]*ToolAdapter
 	sdkClient *mcp.Client // single SDK client instance managing all sessions
+
+	// serverConfigs records the MCPServer config each active session was
+	// last connected with (pre-env-expansion), keyed by server name. Used
+	// by Reconcile to detect a same-named server whose command/args/env/
+	// url/dir changed, so it gets closed and reconnected instead of being
+	// silently left on its old config.
+	serverConfigs map[string]MCPServer
+
+	// OnToolsChanged, if set, is called (without c.mu held) after
+	// handleToolListChanged updates c.tools in response to a server's own
+	// tools/list_changed notification. Callers use this to re-pull
+	// GetTools() and refresh any downstream tool registry — otherwise a
+	// live server's dynamic tool changes are only picked up incidentally,
+	// whenever something else happens to re-call GetTools().
+	OnToolsChanged func()
 }
 
 // NewClient creates a new MCP client with a single underlying SDK client
@@ -30,8 +45,9 @@ type Client struct {
 // re-discover tools when a server's tool list changes dynamically.
 func NewClient() *Client {
 	c := &Client{
-		sessions: make(map[string]*mcp.ClientSession),
-		tools:    make(map[string]*ToolAdapter),
+		sessions:      make(map[string]*mcp.ClientSession),
+		tools:         make(map[string]*ToolAdapter),
+		serverConfigs: make(map[string]MCPServer),
 	}
 	c.sdkClient = mcp.NewClient(
 		&mcp.Implementation{
@@ -280,6 +296,10 @@ func (c *Client) handleToolListChanged(ctx context.Context, req *mcp.ToolListCha
 		c.tools[adapter.Name()] = adapter
 	}
 	c.mu.Unlock()
+
+	if c.OnToolsChanged != nil {
+		c.OnToolsChanged()
+	}
 }
 
 // GetTools returns all MCP tools as Tool interface instances.
@@ -455,11 +475,17 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 			continue
 		}
 
+		// Snapshot the desired config before env-var expansion so change
+		// detection (here and in Reconcile) isn't sensitive to expansion
+		// producing a different string each reload for the same inputs.
+		desiredConfig := server
+
 		c.mu.RLock()
 		_, already := c.sessions[name]
+		unchanged := already && mcpServerEqual(c.serverConfigs[name], desiredConfig)
 		c.mu.RUnlock()
-		if already {
-			continue // already connected — don't reconnect
+		if unchanged {
+			continue // already connected with this exact config — don't reconnect
 		}
 
 		// Expand server variables in server configuration
@@ -498,16 +524,50 @@ func (c *Client) ConnectFromConfig(ctx context.Context, config *MCPConfig) error
 				return fmt.Errorf("failed to connect to server %s: %w", name, err)
 			}
 		}
+
+		c.mu.Lock()
+		c.serverConfigs[name] = desiredConfig
+		c.mu.Unlock()
 	}
 
 	return nil
 }
 
+// mcpServerEqual reports whether two MCPServer configs are equivalent for
+// reconnect-detection purposes: same command/args/env/url/transport/dir.
+// Disabled is deliberately excluded — callers handle enable/disable via
+// the desired-set membership check, not this comparison.
+func mcpServerEqual(a, b MCPServer) bool {
+	if a.Command != b.Command || a.URL != b.URL || a.TransportType != b.TransportType || a.Dir != b.Dir {
+		return false
+	}
+	if len(a.Args) != len(b.Args) {
+		return false
+	}
+	for i := range a.Args {
+		if a.Args[i] != b.Args[i] {
+			return false
+		}
+	}
+	if len(a.Env) != len(b.Env) {
+		return false
+	}
+	for k, v := range a.Env {
+		if b.Env[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // Reconcile brings the connected server set in line with config: sessions
 // for servers that are no longer present (or disabled) are closed, and
-// new servers are connected. Already-connected servers are left alone.
-// Used by the plugin watcher so removing or disabling a plugin drops its
-// MCP servers without restarting Late.
+// new servers are connected. A server whose name is still present and
+// enabled but whose command/args/env/url/dir changed is also closed so
+// ConnectFromConfig reconnects it with the new config instead of leaving
+// it running on the old one. Used by the plugin watcher so
+// installing/removing/editing a plugin's MCP server takes effect without
+// restarting Late.
 func (c *Client) Reconcile(ctx context.Context, config *MCPConfig) error {
 	desired := make(map[string]bool)
 	for name, server := range config.McpServers {
@@ -519,8 +579,11 @@ func (c *Client) Reconcile(ctx context.Context, config *MCPConfig) error {
 	c.mu.Lock()
 	var toClose []*mcp.ClientSession
 	for name, s := range c.sessions {
-		if !desired[name] {
+		server, stillDesired := config.McpServers[name]
+		changed := stillDesired && !server.Disabled && !mcpServerEqual(c.serverConfigs[name], server)
+		if !desired[name] || changed {
 			delete(c.sessions, name)
+			delete(c.serverConfigs, name)
 			toClose = append(toClose, s)
 			for n, t := range c.tools {
 				if t.serverName == name {

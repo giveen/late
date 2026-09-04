@@ -366,8 +366,15 @@ func Update(pm *PluginManager, name string, mc *MarketplaceClient) (*InstalledPl
 	// Determine the target directory the new artifacts should land in.
 	// Project-local plugins live under pm.ProjectDir(); everything else
 	// goes under pm.PluginsDir(). Use the existing plugin's parent as the
-	// source of truth so we never mis-route an update.
+	// source of truth so we never mis-route an update — except for scoped
+	// npm/local installs (old.Path = plugins/@scope/name), where the
+	// immediate parent is the scope directory, not the plugins root; walk
+	// up one more level in that case (mirrors the scoped-path handling
+	// updateNpm already does for its own symlink computation below).
 	targetDir := filepath.Dir(old.Path)
+	if strings.HasPrefix(filepath.Base(targetDir), "@") {
+		targetDir = filepath.Dir(targetDir)
+	}
 
 	switch sourceType {
 	case "git":

@@ -152,7 +152,7 @@ func TestGetInlineTools_AggregatesAcrossPlugins(t *testing.T) {
 	writeExecutableShell(t, filepath.Join(pB.Path, "scripts/b.sh"), `echo b`)
 	pm.Add(pB)
 
-	tools := pm.GetInlineTools()
+	tools := pm.GetInlineTools(nil)
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 namespaced tools, got %d", len(tools))
 	}
@@ -192,7 +192,7 @@ func TestGetInlineTools_SanitizesAndDeduplicates(t *testing.T) {
 	writeToolPlugin(t.TempDir(), "a-b", "c")
 	writeToolPlugin(t.TempDir(), "a", "b-c")
 
-	tools := pm.GetInlineTools()
+	tools := pm.GetInlineTools(nil)
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
@@ -212,6 +212,44 @@ func TestGetInlineTools_SanitizesAndDeduplicates(t *testing.T) {
 	}
 }
 
+// TestGetInlineTools_DedupesAgainstUsedNames is a regression test for the
+// cross-source tool-name-collision bug: GetInlineTools used to dedupe only
+// against other inline tools (used=nil), so an inline tool could silently
+// overwrite an MCP-backed tool registered under the same namespaced name
+// (e.g. inline plugin "github" tool "create_issue" vs. an MCP server
+// literally named "github" exposing "create_issue" — both sanitize to
+// "github__create_issue"). Passing a pre-seeded `used` map (as
+// cmd/late/main.go now does, seeded from already-registered MCP tool
+// names) must make the inline tool pick a different, deduped name instead.
+func TestGetInlineTools_DedupesAgainstUsedNames(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	mf := &LateManifest{
+		Tools: []LateToolManifest{
+			{Name: "create_issue", Description: "t",
+				Script: "scripts/t.sh", Parameters: jsonRaw(`{}`)},
+		},
+	}
+	dir := t.TempDir()
+	p := writeTestPlugin(t, dir, "github", mf)
+	p.Path = filepath.Join(dir, "github")
+	writeExecutableShell(t, filepath.Join(p.Path, "scripts/t.sh"), `echo t`)
+	pm.Add(p)
+
+	// Simulate an MCP server ("github") having already claimed this name.
+	used := map[string]bool{"github__create_issue": true}
+
+	tools := pm.GetInlineTools(used)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Name == "github__create_issue" {
+		t.Fatalf("inline tool collided with the pre-seeded MCP tool name %q instead of deduping", tools[0].Name)
+	}
+	if !used[tools[0].Name] {
+		t.Fatalf("expected the assigned name %q to be recorded into used", tools[0].Name)
+	}
+}
+
 // TestGetInlineTools_ScopedPluginNamesSanitized ensures npm-scoped plugin
 // names (@scope/name) produce endpoint-safe tool names.
 func TestGetInlineTools_ScopedPluginNamesSanitized(t *testing.T) {
@@ -226,7 +264,7 @@ func TestGetInlineTools_ScopedPluginNamesSanitized(t *testing.T) {
 	writeExecutableShell(t, filepath.Join(p.Path, "scripts/t.sh"), `echo t`)
 	pm.Add(p)
 
-	tools := pm.GetInlineTools()
+	tools := pm.GetInlineTools(nil)
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
 	}

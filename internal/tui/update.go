@@ -47,6 +47,19 @@ type pluginCommandResultMsg struct {
 	err     error
 }
 
+// messageHookResultMsg carries the outcome of asynchronously running a
+// plugin's onMessageSend hooks (PluginManager.HookedMessage). Each hook
+// script runs off the TUI update loop — a slow or misbehaving script must
+// not freeze input and rendering for up to hookTimeout per hook — so the
+// (possibly transformed) message is delivered back as a message and the
+// actual submission happens once it arrives. See submitMessage.
+type messageHookResultMsg struct {
+	target        common.Orchestrator // the agent that was focused when Enter was pressed
+	attachedFiles []string
+	input         string // expandedInput, pre-hook (for input-history dedup)
+	submitted     string // post-hook text to actually submit
+}
+
 // StartPromptMsg submits a prompt as soon as the TUI is ready.
 type StartPromptMsg string
 
@@ -203,6 +216,14 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		})
 		m.updateViewport()
 		return m, clearCmd
+	}
+	if msg, ok := msg.(messageHookResultMsg); ok {
+		if err := msg.target.Submit(msg.submitted, msg.attachedFiles); err != nil {
+			m.Err = err
+			return m, nil
+		}
+		m = m.finishSubmit(msg.target, msg.input)
+		return m, nil
 	}
 
 	// Snapshot state before updateChat processes the key and potentially changes it
@@ -1383,14 +1404,49 @@ func (m Model) submitMessage(input string) (Model, tea.Cmd) {
 	// another paste's placeholder token is never corrupted.
 	expandedInput := expandPastes(input, m.Pastes)
 
-	// Run any plugin-provided onMessageSend hooks before the message is
-	// submitted (Model.ApplyMessageHook is the single integration point).
-	submitted := m.ApplyMessageHook(expandedInput)
-
-	if err := m.Focused.Submit(submitted, m.AttachedFiles); err != nil {
-		m.Err = err
-		return m, nil
+	if m.MessageHook == nil {
+		// No plugin onMessageSend hooks registered — submit synchronously,
+		// unchanged from before hooks existed.
+		if err := m.Focused.Submit(expandedInput, m.AttachedFiles); err != nil {
+			m.Err = err
+			return m, nil
+		}
+		return m.finishSubmit(m.Focused, expandedInput), nil
 	}
+
+	// A plugin registered onMessageSend hooks: each one runs an external
+	// script, bounded by a 15s timeout apiece (internal/plugin/hooks.go).
+	// Run them off the Bubble Tea update loop (Update() must return before
+	// the program can process the next message or repaint) so a slow or
+	// misbehaving hook can't freeze keystrokes/rendering. The message is
+	// visibly submitted — input cleared, history recorded, state flipped
+	// to thinking — only once messageHookResultMsg arrives with the
+	// (possibly transformed) text; see its handler in updateInternal. This
+	// mirrors how pluginCommandResultMsg already defers plugin
+	// slash-command handlers the same way.
+	target := m.Focused
+	attachedFiles := m.AttachedFiles
+	hook := m.MessageHook
+	return m, func() tea.Msg {
+		return messageHookResultMsg{
+			target:        target,
+			attachedFiles: attachedFiles,
+			input:         expandedInput,
+			submitted:     applyMessageHook(hook, expandedInput),
+		}
+	}
+}
+
+// finishSubmit performs the bookkeeping that follows a successful
+// target.Submit call: input-history append (deduped), paste/history-nav
+// reset, input box clear, and the idle/context-warning -> thinking state
+// transition. Shared by submitMessage's synchronous (no onMessageSend
+// hooks) and async (messageHookResultMsg) paths so both leave the model
+// in the same state. target is passed explicitly (rather than read from
+// m.Focused) because the async path must target whichever agent was
+// focused when Enter was pressed, even if focus has since changed.
+func (m Model) finishSubmit(target common.Orchestrator, expandedInput string) Model {
+	focusedState := m.GetAgentState(target.ID())
 
 	// Save to input history (avoid consecutive duplicates)
 	if len(m.InputHistory) == 0 || m.InputHistory[len(m.InputHistory)-1] != expandedInput {
@@ -1411,7 +1467,7 @@ func (m Model) submitMessage(input string) (Model, tea.Cmd) {
 	}
 	// Token count will be calculated in ContentEvent handler
 	m.updateViewport()
-	return m, nil
+	return m
 }
 
 func (m *Model) updateLayout() {
